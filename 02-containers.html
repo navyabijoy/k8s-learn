@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Containers in five minutes · Kubernetes Handbook</title>
+<meta name="description" content="You know Docker basics, so this chapter is a fast check, with the Linux underneath shown plainly. The one sentence to leave with: a container is a Linux process in a fenced-off room, started from a re">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="2">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Containers in five minutes</h1>
+            <p class="sub">Image vs container, and what Linux is doing underneath</p>
+          </div>
+          <span class="pill">Section 02</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">You know Docker basics, so this chapter is a fast check, with the Linux underneath shown plainly. The one sentence to leave with: <strong>a container is a Linux process in a fenced-off room, started from a read-only image.</strong> If you can say what that means, you understand everything Kubernetes asks of a container.</p>
+
+      <h2>The problem</h2>
+      <p>You write an app. It needs Python 3.12, a certain library version, and a config file at a specific path. It works on your laptop. On the server, Python is 3.9, the library is different, and it breaks.</p>
+      <p>On a real Linux server you also run several apps, and they fight over the same libraries, the same ports and the same files. Virtual machines solve that, but each one carries a whole operating system: gigabytes of disk and a minute to boot.</p>
+      <p>You want each app packaged <em>with</em> everything it needs, isolated from the others, and starting in a second.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>An <strong>image</strong> is a packaged filesystem plus a default command. A <strong>container</strong> is a running instance of an image. The image is the recipe. The container is the dish.</p>
+      </div>
+
+      <h2>Image vs container</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th></th><th>Image</th><th>Container</th></tr></thead>
+        <tbody>
+          <tr><td>What it is</td><td>a read-only package of files</td><td>a running (or stopped) process using that package</td></tr>
+          <tr><td>Analogy</td><td>a program file on disk</td><td>the process running it</td></tr>
+          <tr><td>How many</td><td>one image</td><td>as many containers from it as you like</td></tr>
+          <tr><td>Changes</td><td>never, once built</td><td>has a thin writable layer, thrown away when it is removed</td></tr>
+          <tr><td>Lives in</td><td>a registry, and cached on each node</td><td>on one node</td></tr>
+        </tbody>
+      </table></div>
+      <p>You met the same pair in the Linux handbook: a <strong>program</strong> is code stored on disk, a <strong>process</strong> is that program running. An image is the program. A container is the process.</p>
+
+      <div class="code" data-lang="bash"><pre><code>
+docker pull nginx:1.27
+docker images
+docker run -d --name web -p 8080:80 nginx:1.27
+docker ps
+</code></pre></div>
+      <ul>
+        <li><code>pull</code> downloads an image from a registry.</li>
+        <li><code>images</code> lists the images you have. They are not running.</li>
+        <li><code>run -d --name web -p 8080:80</code> creates and starts a container from the image: <code>-d</code> in the background, <code>--name</code> a name, <code>-p 8080:80</code> sends port 8080 on your machine to port 80 in the container.</li>
+        <li><code>ps</code> lists running containers. Ten <code>docker run</code> commands give ten containers from the same one image.</li>
+      </ul>
+
+      <h2>Layers</h2>
+      <p>An image is built in <strong>layers</strong>, one per step of a build file. Layers are shared between images, so a second image built on the same base downloads only what is new.</p>
+      <div class="code" data-lang="plain" data-file="Dockerfile"><pre><code>
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY . .
+CMD ["python", "app.py"]
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+FROM python:3.12-slim          base layer: a small Linux userland with Python
+WORKDIR /app                   sets the working directory
+COPY requirements.txt .        a layer containing just that file
+RUN pip install -r ...         a layer with the installed libraries
+COPY . .                       a layer with your code
+CMD ["python", "app.py"]       the default command (not a layer; it is metadata)
+</code></pre></div>
+      <p>Order matters. Docker reuses a cached layer if nothing above it changed. Copying <code>requirements.txt</code> and installing <em>before</em> copying your code means a code change does not reinstall every library.</p>
+
+      <h2>Registries, names and tags</h2>
+      <div class="code" data-lang="tree"><pre><code>
+registry.example.com / team / web : 1.4.2
+│                      │      │     │
+│                      │      │     └─ tag: a label for a version
+│                      │      └─────── repository name
+│                      └────────────── namespace or organisation
+└───────────────────────────────────── registry (leave out for Docker Hub)
+</code></pre></div>
+      <p>A <strong>registry</strong> is a server that stores images. <strong>Docker Hub</strong> is the default one, so <code>nginx:1.27</code> really means <code>docker.io/library/nginx:1.27</code>.</p>
+      <p>A <strong>tag</strong> is a movable label. <code>nginx:1.27</code> can point to a different image next month. For an exact, unchanging reference, use the <strong>digest</strong>:</p>
+      <div class="code" data-lang="bash"><pre><code>
+docker pull nginx:1.27
+docker pull nginx@sha256:&lt;64-hex-characters&gt;
+</code></pre></div>
+      <ul>
+        <li>The first form follows the tag.</li>
+        <li>The second pins one exact image, forever. It is what you use when you must prove what was running.</li>
+      </ul>
+
+      <h2>A container is a process</h2>
+      <p>This is the part that makes Kubernetes make sense. A container is <strong>not</strong> a small virtual machine. There is no second kernel. It is a normal Linux process, with two kernel features applied to it:</p>
+      <div class="cards">
+        <div class="card"><span class="tag">Namespaces</span><p>Control what the process can <em>see</em>. Its own process list (it thinks it is PID 1), its own network, its own mounts, its own hostname.</p></div>
+        <div class="card"><span class="tag">cgroups</span><p>Control how much the process can <em>use</em>: CPU, memory, and number of processes. This is where Kubernetes limits come from (chapter 13).</p></div>
+        <div class="card"><span class="tag">Union filesystem</span><p>Stacks the image layers read-only and adds one writable layer on top, so the container sees one ordinary filesystem.</p></div>
+        <div class="card"><span class="tag">Shared kernel</span><p>All containers on a node share its Linux kernel. That is why they start in a second, and why a container cannot run a different kernel than its host.</p></div>
+      </div>
+
+      <p>You can see it for yourself on a Linux machine with Docker:</p>
+      <div class="code" data-lang="bash"><pre><code>
+docker run -d --name sleeper alpine sleep 600
+docker exec sleeper ps
+ps aux | grep "sleep 600"
+docker top sleeper
+</code></pre></div>
+      <ul>
+        <li>Inside the container, <code>ps</code> shows <code>sleep 600</code> as <strong>PID 1</strong>.</li>
+        <li>On the host, the same program shows up in <code>ps aux</code> with an ordinary, different PID.</li>
+        <li>It is <em>one</em> process, seen through two namespaces. On a Mac you only see the host side from inside Docker Desktop's Linux VM, but the idea is the same.</li>
+      </ul>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th></th><th>Virtual machine</th><th>Container</th></tr></thead>
+        <tbody>
+          <tr><td>Kernel</td><td>its own</td><td>shares the host's</td></tr>
+          <tr><td>Size</td><td>gigabytes</td><td>megabytes</td></tr>
+          <tr><td>Start time</td><td>tens of seconds</td><td>about a second</td></tr>
+          <tr><td>Isolation</td><td>strong (hypervisor)</td><td>weaker (kernel features)</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>PID 1 and signals</h3>
+      <p>Whatever the container's command is becomes PID 1 inside it. When Kubernetes stops a container, it sends <strong>SIGTERM</strong> to PID 1 and, after a grace period, <strong>SIGKILL</strong>. This is the <code>kill</code> and <code>kill -9</code> pair from the Linux handbook. A program that ignores SIGTERM, or a shell script wrapper that does not pass it on, will take the full grace period to stop. Exec form (<code>CMD ["python", "app.py"]</code>) hands the signal straight to your app. Shell form (<code>CMD python app.py</code>) puts a shell in between.</p>
+
+      <h2>Runtimes: who actually starts it</h2>
+      <p>When you type <code>docker run</code>, a chain of programs does the work. Kubernetes uses the lower part of that chain, without Docker's command line.</p>
+      <div class="flow"><span>docker CLI</span><i>→</i><span>Docker daemon</span><i>→</i><span>containerd</span><i>→</i><span>runc</span><i>→</i><span>Linux kernel</span></div>
+      <ul>
+        <li><strong>containerd</strong> is a <strong>container runtime</strong>: it pulls images and manages containers. Kubernetes nodes talk to it (or to CRI-O) through the Container Runtime Interface, <strong>CRI</strong>.</li>
+        <li><strong>runc</strong> is the small program that actually creates the namespaces and cgroups and starts the process.</li>
+        <li>Images follow an open standard, <strong>OCI</strong> (Open Container Initiative), so an image built with Docker runs on containerd, CRI-O or Podman.</li>
+      </ul>
+      <p>That is why "Kubernetes dropped Docker" was a headline that mostly meant nothing for you: your Docker-built images still run, because they are standard OCI images. What changed is that nodes talk to containerd directly instead of through the Docker daemon.</p>
+
+      <h2>The rules containers live by</h2>
+      <ul>
+        <li><strong>One main process per container.</strong> Not a web server, a database and an SSH daemon in one. One job per container, and the Pod (chapter 6) groups the ones that belong together.</li>
+        <li><strong>The writable layer is temporary.</strong> Anything written inside is gone when the container is replaced. Keep data on a volume (chapter 12).</li>
+        <li><strong>Log to stdout and stderr.</strong> The runtime captures those. <code>kubectl logs</code> reads them. A log file inside the container is invisible.</li>
+        <li><strong>Configuration comes in from outside:</strong> environment variables and mounted files (chapter 11), so one image runs in dev and prod.</li>
+        <li><strong>Containers are cattle, not pets.</strong> Expect them to be replaced at any time.</li>
+      </ul>
+
+      <h2>How this shows up in Kubernetes</h2>
+      <div class="code" data-lang="yaml"><pre><code>
+containers:
+  - name: web
+    image: registry.example.com/team/web:1.4.2
+    imagePullPolicy: IfNotPresent
+    command: ["python"]
+    args: ["app.py"]
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+image: ...:1.4.2          what to run (registry / repo : tag)
+imagePullPolicy:          when the node should download it
+command: ["python"]       replaces the image's ENTRYPOINT
+args: ["app.py"]          replaces the image's CMD
+</code></pre></div>
+      <p>Two details trip people up:</p>
+      <ul>
+        <li><strong><code>imagePullPolicy</code>.</strong> If you leave it out, Kubernetes uses <code>IfNotPresent</code> for a specific tag, but <code>Always</code> if the tag is <code>:latest</code> or there is no tag. <code>Always</code> means a registry check every time a Pod starts.</li>
+        <li><strong><code>command</code> and <code>args</code> are the Kubernetes names for Docker's <code>ENTRYPOINT</code> and <code>CMD</code>.</strong> <code>command</code> replaces the entrypoint. <code>args</code> replaces the command. People set <code>command</code> thinking it is <code>args</code>, and wipe out the image's entrypoint.</li>
+      </ul>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li><strong><code>ps aux</code>, <code>top</code>, <code>kill</code></strong> work on containers because containers are processes. A runaway container shows up in the host's <code>top</code>.</li>
+        <li><strong>The filesystem tree</strong> (<code>/</code>, <code>/etc</code>, <code>/var</code>, <code>/tmp</code>) inside a container is the image's. Your host's <code>/</code> is separate unless you mount something into it.</li>
+        <li><strong>Permissions</strong> still apply. A process in a container runs as a user. The default in many images is <strong>root</strong>, which is why good images set a non-root user (chapter 16 and your security habits).</li>
+        <li><strong><code>/proc</code></strong> is still the kernel's window. Inside a container, <code>cat /proc/1/cgroup</code> and <code>ls -l /proc/1/ns</code> show the cgroup and namespaces the kernel put it in.</li>
+        <li><strong>Packages.</strong> <code>apt install</code> inside a Dockerfile <code>RUN</code> line is exactly the Linux handbook's package chapter, baked into a layer.</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"A container is a lightweight VM."</strong> It has no kernel of its own. It is a process with limited view and limited resources. That is why a Linux container cannot run on a Windows kernel without a Linux VM underneath.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"I'll save my data inside the container."</strong> The writable layer vanishes when the container is removed. Anything you need after a restart goes on a volume.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"<code>nginx:1.27</code> always means the same image."</strong> Tags move. For a build you must be able to reproduce, use a version tag you control, or a digest.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"Docker is required for Kubernetes."</strong> Not on the nodes. Modern clusters use containerd or CRI-O. You may still use Docker on your laptop to build images.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Running as root with <code>:latest</code> and no resource limits.</strong> It works on day one and causes three separate incidents later. Pin the tag, set a user, set limits.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p><code>docker run --privileged</code>, or a Kubernetes container with <code>privileged: true</code>, removes most of the isolation. The container can then do almost anything the host can. Never use it for something you do not fully trust.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>You need Docker. These commands are safe. Everything is removed at the end. On a Mac, Docker runs in a Linux VM, so the <code>ps aux</code> on the host side will not find the process. Use a Linux machine for that step, or skip it.</p>
+      </div>
+      <div class="code" data-lang="bash"><pre><code>
+# 1. one image, two containers
+docker pull nginx:1.27
+docker run -d --name web1 -p 8081:80 nginx:1.27
+docker run -d --name web2 -p 8082:80 nginx:1.27
+docker ps
+curl -I localhost:8081
+curl -I localhost:8082
+
+# 2. a container is a process (on Linux)
+docker run -d --name sleeper alpine sleep 600
+docker exec sleeper ps
+ps aux | grep "sleep 600"
+
+# 3. the filesystem is temporary
+docker exec web1 sh -c 'echo hello &gt; /tmp/note.txt; cat /tmp/note.txt'
+docker rm -f web1
+docker run -d --name web1 -p 8081:80 nginx:1.27
+docker exec web1 cat /tmp/note.txt      # No such file: a new container, a fresh layer
+
+# 4. limits are cgroups
+docker run -d --name limited --memory=64m --cpus=0.5 nginx:1.27
+docker exec limited cat /sys/fs/cgroup/memory.max
+docker exec limited cat /sys/fs/cgroup/cpu.max
+
+# 5. clean up
+docker rm -f web1 web2 sleeper limited
+</code></pre></div>
+      <p>What to look for:</p>
+      <ul>
+        <li>Step 1: two containers from one image, on two ports.</li>
+        <li>Step 2: <code>sleep 600</code> is PID 1 inside, and an ordinary process on the host.</li>
+        <li>Step 3: the note is gone. The data lived in a layer that no longer exists.</li>
+        <li>Step 4: the memory limit appears as a number of bytes in a file, and the CPU limit as a quota and a period. That is exactly what Kubernetes <code>limits</code> turn into. (The file names assume cgroup v2, which current Docker Desktop and recent Linux use.)</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>What's the difference between an image and a container?</summary>
+          <div class="answer">
+            <p>An image is a read-only, layered package: a filesystem plus metadata like the default command. A container is a running instance of it, with a thin writable layer on top, which disappears when the container is removed. One image can have many containers. It's the same relationship as a program on disk and a process running it.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What is a container, technically?</summary>
+          <div class="answer">
+            <p>A normal Linux process with two kernel features applied. Namespaces limit what it can see: its own process list, network, mounts and hostname. cgroups limit how much it can use: CPU, memory, process count. It shares the host's kernel, which is why it starts in about a second, and why it's less isolated than a VM.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How are containers different from VMs?</summary>
+          <div class="answer">
+            <p>A VM runs a whole operating system with its own kernel on a hypervisor. A container shares the host kernel and is just an isolated process. So containers are much smaller and start much faster, but the isolation is weaker because they depend on the kernel's own boundaries. Both have uses. A Linux container can't run a different kernel from its host.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Kubernetes "dropped Docker". What does that mean for me?</summary>
+          <div class="answer">
+            <p>Nodes no longer use the Docker daemon as the runtime. They talk to containerd or CRI-O through the Container Runtime Interface. It doesn't affect my images, because Docker builds standard OCI images, and those run on any OCI runtime. I can still build with Docker on my laptop. What I can't do is assume the Docker command exists on a node.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What are <code>command</code> and <code>args</code> in a Pod spec?</summary>
+          <div class="answer">
+            <p><code>command</code> overrides the image's ENTRYPOINT, and <code>args</code> overrides its CMD. If I set only <code>args</code>, the image's entrypoint still runs with my arguments. If I set <code>command</code>, I replace the entrypoint entirely. The common mistake is setting <code>command</code> when I meant to pass arguments, which silently removes the entrypoint the image relied on.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Think</strong> "process in a fenced room", not "tiny VM". <strong>Pin</strong> image tags. <strong>Log</strong> to stdout. <strong>Keep</strong> data on volumes and config outside the image. <strong>Run</strong> as a non-root user. <strong>Use</strong> exec form for <code>CMD</code> so signals reach your app. And when a container misbehaves, remember you can use the Linux tools you already know.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

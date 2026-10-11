@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why Kubernetes exists · Kubernetes Handbook</title>
+<meta name="description" content="Kubernetes is not a clever idea that someone invented for fun. It is a pile of solutions to problems you will hit the moment you run more than a few containers on more than one machine. This chapter l">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="1">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Why Kubernetes exists</h1>
+            <p class="sub">The problem that came before the tool</p>
+          </div>
+          <span class="pill">Section 01</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">Kubernetes is not a clever idea that someone invented for fun. It is a pile of solutions to problems you will hit the moment you run more than a few containers on more than one machine. This chapter lists those problems, one at a time, so that when you say "Kubernetes does X" you can also say why X was needed.</p>
+
+      <h2>The problem, told as a story</h2>
+      <p>Imagine you run a small website on one Linux server. You installed nginx and your app, as in the Linux handbook. <code>systemctl</code> keeps them running. Life is fine.</p>
+
+      <h3>Stage 1: traffic grows</h3>
+      <p>One server is not enough. You rent a second, then a third. Now you have questions that one server never raised:</p>
+      <ul>
+        <li>Which server runs which program?</li>
+        <li>How do the servers find each other?</li>
+        <li>How do you send traffic across all three?</li>
+      </ul>
+      <p>You start writing scripts. A script to copy the app to every server. A script to restart it. A spreadsheet of which program lives where.</p>
+
+      <h3>Stage 2: servers die</h3>
+      <p>One night a server fails. Your app was on it. <code>systemd</code> on that machine cannot help: the machine is gone. Someone gets paged, starts the app on another server, and edits the load balancer by hand. Total downtime: however long that takes.</p>
+
+      <h3>Stage 3: containers</h3>
+      <p>You package the app and its dependencies into a container image (chapter 2). That is a big step forward: the app runs the same everywhere. But containers answer the question "how do I package it?". They do not answer "where does it run, and who restarts it?". <code>docker run</code> starts one container on one machine, and that is all it knows.</p>
+
+      <h3>Stage 4: many containers, many machines</h3>
+      <p>Now you have fifty containers over ten servers. Updates, scaling, failures, secrets, config, storage, networking. Every one of those is a script you would have to write and keep correct.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>Kubernetes is software that treats a group of machines as one pool. You tell it <strong>what you want running</strong>. It decides where, starts it, watches it, and fixes it when reality drifts away from what you asked for.</p>
+      </div>
+
+      <div class="flow"><span>one server + systemd</span><i>→</i><span>many servers + scripts</span><i>→</i><span>containers</span><i>→</i><span>many containers: you need an orchestrator</span></div>
+
+      <h2>The jobs it does</h2>
+      <p>Each of these is something you would otherwise do by hand, or script.</p>
+      <div class="cards">
+        <div class="card"><span class="tag">Scheduling</span><p>Picks which machine runs each container, based on what it needs and what each machine has free.</p></div>
+        <div class="card"><span class="tag">Self-healing</span><p>Restarts containers that die. Replaces Pods when a node dies. Stops sending traffic to something that is not ready.</p></div>
+        <div class="card"><span class="tag">Scaling</span><p>Runs more or fewer copies when you ask, or when load changes if you set up autoscaling.</p></div>
+        <div class="card"><span class="tag">Rolling updates</span><p>Changes versions a few copies at a time, and can go back if the new version is bad.</p></div>
+        <div class="card"><span class="tag">Service discovery</span><p>Gives groups of Pods a stable name and address, and spreads traffic across them.</p></div>
+        <div class="card"><span class="tag">Config and secrets</span><p>Keeps settings and passwords outside the image, and hands them to the right Pods.</p></div>
+        <div class="card"><span class="tag">Storage</span><p>Attaches disks to Pods and keeps data when a Pod moves.</p></div>
+        <div class="card"><span class="tag">One API</span><p>Everything above is controlled through the same HTTP API and the same YAML, on any cloud or laptop.</p></div>
+      </div>
+
+      <p>You will meet each of those as its own chapter. Here are the ones you have already seen: scheduling and self-healing (chapters 3 and 13), rolling updates (chapter 7) and service discovery (chapter 9).</p>
+
+      <h2>The one big idea: declare, do not instruct</h2>
+      <p>You already know two ways to make a change on Linux.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th></th><th>Imperative: "do this"</th><th>Declarative: "make it look like this"</th></tr></thead>
+        <tbody>
+          <tr><td>Linux</td><td><code>sudo apt install nginx</code>, then <code>systemctl start nginx</code></td><td>a config file that says "nginx should be installed and running"</td></tr>
+          <tr><td>Kubernetes</td><td><code>kubectl run</code>, <code>kubectl scale</code></td><td>a YAML file that says "3 replicas of web", given to <code>kubectl apply</code></td></tr>
+          <tr><td>If something drifts</td><td>nothing happens until you notice</td><td>the system notices and puts it back</td></tr>
+        </tbody>
+      </table></div>
+      <p>Kubernetes is built around the second kind. You write down <strong>desired state</strong>. Programs called <strong>controllers</strong> keep comparing it to <strong>actual state</strong> and closing the gap, forever. That one loop is the whole design. If you remember only one sentence from this chapter, remember that one.</p>
+
+      <div class="code" data-lang="yaml" data-file="web-deploy.yaml"><pre><code>
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27
+</code></pre></div>
+      <p>That file does not say "start three containers". It says "there should be three". If one dies, there are two, and the cluster makes a third. You will write this exact file in chapter 7.</p>
+
+      <h2>What Kubernetes is not</h2>
+      <ul>
+        <li><strong>Not a container runtime.</strong> It does not start containers itself. It asks a runtime (like containerd) to.</li>
+        <li><strong>Not Docker.</strong> Docker builds and runs containers. Kubernetes organises many of them across machines. They work together but are different tools.</li>
+        <li><strong>Not a platform in a box.</strong> It does not build your code, run your CI, or give you a database. People add those.</li>
+        <li><strong>Not magic scaling.</strong> It can scale Pods. It does not make a badly written app fast or fix a database that cannot take the load.</li>
+        <li><strong>Not free to run.</strong> You pay in complexity: more things to learn, secure and upgrade.</li>
+      </ul>
+
+      <h2>When you do not need it</h2>
+      <p>An honest answer to "should we use Kubernetes?" is sometimes no. One small app on one server, with a few users, does not need an orchestrator. A <code>systemd</code> service, or <code>docker compose</code> on a single machine, is simpler, cheaper and easier to debug.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Reach for Kubernetes when…</th><th>Skip it when…</th></tr></thead>
+        <tbody>
+          <tr><td>you run many services on several machines</td><td>you have one app on one server</td></tr>
+          <tr><td>you need zero-downtime updates and self-healing</td><td>a few minutes of downtime during an update is fine</td></tr>
+          <tr><td>teams deploy independently and often</td><td>one person deploys once a month</td></tr>
+          <tr><td>you want the same workflow on any cloud or on premises</td><td>you are happy on one provider's simple hosting</td></tr>
+        </tbody>
+      </table></div>
+
+      <h2>Where it came from</h2>
+      <p>Google ran huge numbers of containers for years on an internal system called Borg. In 2014 Google began Kubernetes as an open-source project built on what they had learned. It was donated to the Cloud Native Computing Foundation (CNCF), which now looks after it, and it has been the standard way to run containers at scale for most of a decade since.</p>
+      <p>The name is Greek for "helmsman", the person steering a ship. You will see it written <strong>K8s</strong>: a K, eight letters, and an s.</p>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li><strong>systemd</strong> keeps services running on <em>one</em> machine, and restarts them when they fail. Kubernetes does the same job for containers across <em>many</em> machines. When you read "Deployment" you can think "systemd, but for a fleet".</li>
+        <li><strong><code>cron</code></strong> runs jobs on a schedule on one machine. Kubernetes has CronJobs for the same job across a cluster (chapter 14).</li>
+        <li>The <strong>process</strong> and <strong>service</strong> ideas from the Linux handbook carry over exactly: a container is a process, a Pod is a group of them, and a Service is a stable name for a group of them.</li>
+        <li>The Linux kernel is still doing the real work. Kubernetes is a manager sitting on top of it.</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"Kubernetes is a replacement for Docker."</strong> They solve different problems. Docker (or any tool that builds OCI images) makes the container image. Kubernetes runs lots of them across machines, using a runtime such as containerd.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"Kubernetes makes my app highly available."</strong> It gives you the tools: copies, health checks, rescheduling. An app with one replica, no probes, and one database is still a single point of failure.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"We should use Kubernetes because everyone does."</strong> Choose it for a reason you can say in one sentence. In an interview, being able to say when <em>not</em> to use it shows more understanding than reciting features.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"Kubernetes starts my containers."</strong> It decides. The kubelet and the container runtime on each node start them. The next chapters show who does what.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>This chapter has no cluster work yet. Do the thinking instead, with pen and paper or out loud.</p>
+      </div>
+      <ol>
+        <li>Think of an app you know. List what you would have to script by hand to run <strong>five copies</strong> of it across <strong>three servers</strong> and survive one server dying.</li>
+        <li>Next to each item, write which Kubernetes job from this chapter replaces it: scheduling, self-healing, scaling, rolling updates, discovery, config, storage.</li>
+        <li>Say aloud, in two sentences and without the word "orchestration", what Kubernetes does.</li>
+        <li>Name one project you would <em>not</em> put on Kubernetes, and why.</li>
+      </ol>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>What problem does Kubernetes solve?</summary>
+          <div class="answer">
+            <p>Containers solve packaging, but not running many of them across many machines. Kubernetes takes a pool of machines and runs containers on them for me. I describe what I want, like three copies of this app, and it picks the machines, starts them, restarts them when they fail, replaces them when a node dies, updates them gradually, and gives them a stable network address. It replaces a lot of scripting and manual work.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What does "declarative" mean in Kubernetes?</summary>
+          <div class="answer">
+            <p>I write down the state I want, not the steps to get there. For example, replicas: 3. Controllers then compare that desired state against what actually exists and keep fixing the difference. If a Pod dies, I don't do anything. The controller sees two where there should be three and creates one. The opposite, imperative, is running commands one by one and hoping nothing drifts afterwards.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Why not just use Docker Compose?</summary>
+          <div class="answer">
+            <p>Compose is great on one machine. It describes a set of containers on a single host. It doesn't spread them across several machines, replace them when a machine fails, do rolling updates with health checks, or give me a cluster-wide network and API. If I have one small app on one server, Compose, or even systemd, is simpler and I'd use that. Kubernetes pays off when I have many services, several machines, and a need for resilience and gradual rollouts.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Is Kubernetes the same as Docker?</summary>
+          <div class="answer">
+            <p>No. Docker builds container images and can run containers on one host. Kubernetes manages containers across many hosts. Kubernetes doesn't run containers itself. It asks a container runtime, usually containerd, to. They work together: I might build an image with Docker and run it on Kubernetes.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>When would you not recommend Kubernetes?</summary>
+          <div class="answer">
+            <p>When the problem is small. One app on one server, a small team, and downtime during deploys is acceptable. The cost of Kubernetes is complexity: more to learn, secure and upgrade. In that case a systemd service or Compose on a VM is easier to run and debug. I'd recommend Kubernetes once there are enough services, machines or teams that the automation pays for the complexity.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Start</strong> from the problem, then name the tool. <strong>Say</strong> "desired state and actual state" when you explain how it works. <strong>Compare</strong> to Linux things you know: systemd, cron, processes. <strong>Be honest</strong> about when it is too much. And remember: Kubernetes decides, the nodes do.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

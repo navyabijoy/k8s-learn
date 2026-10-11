@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting a cluster on your machine · Kubernetes Handbook</title>
+<meta name="description" content="You learn Kubernetes by breaking a cluster, and you cannot break a production one. So you need a cluster of your own that you can destroy and rebuild in a minute. This chapter sets one up on your Mac ">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="4">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Getting a cluster on your machine</h1>
+            <p class="sub">kind on macOS, MicroK8s on Ubuntu</p>
+          </div>
+          <span class="pill">Section 04</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">You learn Kubernetes by breaking a cluster, and you cannot break a production one. So you need a cluster of your own that you can destroy and rebuild in a minute. This chapter sets one up on your Mac with <strong>kind</strong>, or on Ubuntu with <strong>MicroK8s</strong>, and checks that it works.</p>
+
+      <h2>The problem</h2>
+      <p>A real cluster is many machines. You have a laptop. The Linux handbook gave you three ways to get a Linux box: a rented VPS, VirtualBox, or WSL. Kubernetes has the same choice, with one difference: the cluster itself can run <em>inside</em> your laptop, as containers or as one snap.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>A local cluster is a real, conformant Kubernetes with a small footprint. The commands are the same ones you use on a cloud cluster. What differs is size, speed and the missing cloud pieces (no cloud load balancers, no cloud disks).</p>
+      </div>
+
+      <h2>Pick one</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Option</th><th>How it runs</th><th>Best for</th><th>Needs</th></tr></thead>
+        <tbody>
+          <tr><td><strong>kind</strong></td><td>each node is a Docker container</td><td>macOS, Linux, CI. Fast to create and throw away. Multi-node in one command.</td><td>Docker (or Podman)</td></tr>
+          <tr><td><strong>MicroK8s</strong></td><td>one snap, directly on Ubuntu</td><td>Ubuntu machines, small real clusters, edge</td><td>Ubuntu with snap</td></tr>
+          <tr><td><strong>Canonical Kubernetes</strong></td><td>the <code>k8s</code> snap</td><td>trying Canonical's newer distribution (chapter 22)</td><td>clean Ubuntu 22.04+, 8 GB RAM</td></tr>
+          <tr><td>Docker Desktop's Kubernetes</td><td>a single-node cluster inside Docker Desktop</td><td>quickest start if you already have Docker Desktop</td><td>Docker Desktop with Kubernetes switched on in settings</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="callout key">
+        <span class="label">What this handbook uses</span>
+        <p>Labs are written for <strong>kind</strong>, and the context name is <code>kind-handbook</code>. If you are on Ubuntu, MicroK8s works for nearly every lab: replace <code>kubectl</code> with <code>microk8s kubectl</code>, or alias it.</p>
+      </div>
+
+      <h2>Install kubectl first</h2>
+      <div class="code" data-lang="bash"><pre><code>
+brew install kubectl
+kubectl version --client
+</code></pre></div>
+      <p>On Ubuntu, <code>sudo snap install kubectl --classic</code> does the same. <code>--client</code> asks only about the local program, so it works with no cluster.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p><strong>Version skew:</strong> Kubernetes supports a <code>kubectl</code> that is within <strong>one minor version</strong> of the cluster's API server, newer or older. <code>kubectl</code> 1.36 against a 1.35 cluster is fine. A <code>kubectl</code> two or more versions away may misbehave. Check both with <code>kubectl version</code> once you have a cluster.</p>
+      </div>
+
+      <h2>Option A: kind on macOS</h2>
+      <p><strong>kind</strong> means "Kubernetes IN Docker". It starts a Docker container for each node, and inside each container it runs a full node: the kubelet, a container runtime, and the control-plane programs on the control-plane node. Docker (or Podman, or nerdctl, which kind can detect) must be running first.</p>
+
+      <div class="code" data-lang="bash"><pre><code>
+brew install kind
+kind create cluster --name handbook
+kubectl cluster-info --context kind-handbook
+kubectl get nodes
+</code></pre></div>
+      <ul>
+        <li><code>kind create cluster --name handbook</code> builds a one-node cluster and writes a context to your kubeconfig.</li>
+        <li>The context is named <code>kind-</code> plus the cluster name: <code>kind-handbook</code>. kind also switches <code>kubectl</code> to it.</li>
+        <li><code>cluster-info</code> prints the API server address. <code>get nodes</code> should show one node <code>Ready</code> after a short wait.</li>
+      </ul>
+
+      <h3>A three-node cluster, like a real one</h3>
+      <p>Most chapters that follow behave more interestingly with more than one node (scheduling, taints, DaemonSets). Describe the shape in a file:</p>
+      <div class="code" data-lang="yaml" data-file="kind-3node.yaml"><pre><code>
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+</code></pre></div>
+      <div class="code" data-lang="bash"><pre><code>
+kind delete cluster --name handbook
+kind create cluster --name handbook --config kind-3node.yaml
+kubectl get nodes
+</code></pre></div>
+      <ul>
+        <li>The file is a kind config, not a Kubernetes manifest. Its <code>apiVersion</code> belongs to kind.</li>
+        <li>You should see three nodes: one with the <code>control-plane</code> role, two with none. Workers show <code>&lt;none&gt;</code> in <code>ROLES</code> because that is what a plain worker looks like.</li>
+      </ul>
+
+      <h3>Everyday kind commands</h3>
+      <div class="code" data-lang="bash"><pre><code>
+kind get clusters
+kind load docker-image my-app:1.0 --name handbook
+kind delete cluster --name handbook
+</code></pre></div>
+      <ul>
+        <li><code>get clusters</code> lists what you have.</li>
+        <li><code>load docker-image</code> copies an image you built locally into the cluster nodes. Without it, the nodes cannot see your laptop's Docker images. Use a tag other than <code>latest</code>, or set <code>imagePullPolicy: IfNotPresent</code>, or the kubelet will try to pull from a registry and fail.</li>
+        <li><code>delete cluster</code> removes the nodes and the kubeconfig entry. Recreating takes about a minute. That is the point: if you make a mess, delete and start again.</li>
+      </ul>
+
+      <h2>Option B: MicroK8s on Ubuntu</h2>
+      <div class="code" data-lang="bash"><pre><code>
+sudo snap install microk8s --classic
+microk8s status --wait-ready
+microk8s kubectl get nodes
+alias kubectl='microk8s kubectl'
+</code></pre></div>
+      <ul>
+        <li>The install is a standard snap install. <code>--classic</code> means it is not sandboxed. Chapter 22 explains snaps.</li>
+        <li><code>status --wait-ready</code> blocks until the cluster is up.</li>
+        <li>The alias makes every <code>kubectl</code> command in this handbook work unchanged in that shell.</li>
+      </ul>
+      <p>On macOS, Canonical documents <code>brew install ubuntu/microk8s/microk8s</code> followed by <code>microk8s install</code>. Chapter 22 covers MicroK8s clusters, add-ons and joining nodes.</p>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li>Why do we use a Linux machine at all? Because every Kubernetes node <strong>is</strong> a Linux machine. kind nodes are Linux containers. MicroK8s is a Linux snap. On a Mac, Docker Desktop quietly runs a small Linux VM underneath, just like VirtualBox in the Linux handbook, so there is still a Linux kernel doing the work.</li>
+        <li>A kind node is a container, but you can go in like it is a server: <code>docker exec -it handbook-control-plane bash</code>, then <code>ps aux</code>, <code>systemctl status kubelet</code>, <code>ls /etc/kubernetes/manifests</code>. Same tools as the Linux handbook.</li>
+        <li><code>docker ps</code> shows your nodes as containers named <code>handbook-control-plane</code> and <code>handbook-worker</code>. A <em>cluster</em> inside <em>containers</em>, and your Pods run in containers inside those. Containers all the way down, because it is all Linux processes.</li>
+        <li>Resource limits are the same story: a three-node kind cluster is three containers sharing your laptop's RAM. Give Docker Desktop enough memory in its settings.</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"<code>kubectl</code> says connection refused."</strong> The cluster is not running, or <code>kubectl</code> points somewhere else. Check Docker is running, then <code>kubectl config current-context</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"My local image will not start: <code>ErrImagePull</code>."</strong> The cluster cannot see your laptop's images. Run <code>kind load docker-image</code>, and avoid the <code>latest</code> tag.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"My <code>LoadBalancer</code> Service stays <code>&lt;pending&gt;</code>."</strong> A laptop cluster has no cloud to hand out addresses. Use <code>kubectl port-forward</code>, or, with kind, the <code>cloud-provider-kind</code> project from the kind maintainers. Nothing is broken.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Installing MicroK8s or the <code>k8s</code> snap on a machine that already runs Docker.</strong> Canonical's docs warn about conflicts. Use a clean machine or VM.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"This laptop cluster is how production works."</strong> It is a good model of the API. It is not a model of production: no real load balancer, usually one control-plane node, local storage only, and nothing is highly available.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p>A machine can hold several contexts at once: your kind cluster, a staging cluster, production. Before any <code>kubectl delete</code>, run <code>kubectl config current-context</code>. A cluster you built an hour ago is safe to destroy. The other ones are not.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>Build the three-node cluster, prove it works, look inside a node, and tear it down. Save the config from this chapter as <code>kind-3node.yaml</code>.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+# 1. is Docker running?
+docker ps
+
+# 2. create the cluster
+kind create cluster --name handbook --config kind-3node.yaml
+
+# 3. check it
+kubectl config current-context
+kubectl version
+kubectl get nodes -o wide
+kubectl get pods -A
+
+# 4. run something
+kubectl run web --image=nginx:1.27
+kubectl wait --for=condition=Ready pod/web --timeout=90s
+kubectl get pod web -o wide
+kubectl port-forward pod/web 8080:80
+# second terminal: curl -I localhost:8080
+
+# 5. nodes are containers
+docker ps --format '{{.Names}}'
+docker exec -it handbook-control-plane bash
+ls /etc/kubernetes/manifests
+exit
+
+# 6. clean up the Pod, or start over completely
+kubectl delete pod web
+kind delete cluster --name handbook
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>Step 3: three nodes, all <code>Ready</code>; the client and server versions printed by <code>kubectl version</code> are within one minor version of each other; the <code>kube-system</code> Pods are the ones from chapter 3.</li>
+        <li>Step 4: <code>get pod -o wide</code> shows which worker node the Pod landed on, and that it was not the control-plane node.</li>
+        <li>Step 5: the nodes are containers. The manifests folder holds the static Pod YAML for the control-plane programs.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>How does kind work?</summary>
+          <div class="answer">
+            <p>kind starts one Docker container per node, and each container is a full Kubernetes node image: kubelet, container runtime, and for the control-plane node the API server, etcd, scheduler and controller manager. It writes a kubeconfig context called kind-NAME. So I get a real multi-node cluster on a laptop, which I can delete and recreate in about a minute. It's good for local development and for CI.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What local Kubernetes options have you used, and when would you pick each?</summary>
+          <div class="answer">
+            <p>I use kind for throwaway multi-node clusters, especially on a Mac and in CI. On Ubuntu I'd use MicroK8s, which is one snap and can run as a small real HA cluster, or Canonical Kubernetes if I want Canonical's newer distribution. Docker Desktop's built-in Kubernetes is the quickest single-node option if Docker Desktop is already installed. The choice is mostly about nodes: kind and MicroK8s give me several, Docker Desktop one.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How much can your <code>kubectl</code> version differ from the cluster's?</summary>
+          <div class="answer">
+            <p>One minor version in either direction is supported. So kubectl 1.36 works against a 1.35, 1.36 or 1.37 API server. More than that and some commands may fail or behave oddly. I check both with <code>kubectl version</code>.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>My locally built image won't run in kind. Why?</summary>
+          <div class="answer">
+            <p>The kind nodes are containers with their own image store. They can't see images in my laptop's Docker. I need <code>kind load docker-image</code> to copy it in. Then I make sure the tag isn't <code>latest</code>, or set <code>imagePullPolicy: IfNotPresent</code>, because <code>latest</code> defaults to always pulling, and the pull would fail because the image isn't in a registry.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Why is a laptop cluster not a good model of production?</summary>
+          <div class="answer">
+            <p>The API behaves the same, but the surroundings don't. There's no real load balancer, so LoadBalancer Services stay pending. Storage is local disk. There's usually one control-plane node, so no high availability. There's no real network separation or node failure. So I trust it for learning the objects and testing manifests, not for judging reliability or performance.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Rebuild</strong> instead of repairing a lab cluster. <strong>Name</strong> your clusters and check the context before you run anything destructive. <strong>Keep</strong> the kind config in a file. <strong>Match</strong> <code>kubectl</code> to the cluster within one minor version. <strong>Load</strong> local images with <code>kind load docker-image</code>. And treat a laptop cluster as a place to learn the objects, not to judge production behaviour.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

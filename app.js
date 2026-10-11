@@ -6,10 +6,10 @@
   // Links use the .html filename so they work from file:// as well as on Vercel
   // (cleanUrls redirects /06-pods.html to /06-pods).
   var CHAPTERS = [
-    { n: 1,  file: "01-why-kubernetes.html",   title: "Why Kubernetes exists" },
-    { n: 2,  file: "02-containers.html",       title: "Containers in five minutes" },
+    { n: 1,  file: "01-why-kubernetes.html",   title: "Why Kubernetes exists", ready: true },
+    { n: 2,  file: "02-containers.html",       title: "Containers in five minutes", ready: true },
     { n: 3,  file: "03-cluster.html",          title: "What a cluster is", ready: true },
-    { n: 4,  file: "04-local-cluster.html",    title: "Getting a cluster on your machine" },
+    { n: 4,  file: "04-local-cluster.html",    title: "Getting a cluster on your machine", ready: true },
     { n: 5,  file: "05-kubectl-yaml.html",     title: "kubectl basics and reading YAML", ready: true },
     { n: 6,  file: "06-pods.html",             title: "Pods", ready: true },
     { n: 7,  file: "07-deployments.html",      title: "Deployments, ReplicaSets, rollouts", ready: true },
