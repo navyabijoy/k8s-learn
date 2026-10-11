@@ -25,7 +25,7 @@
     { n: 17, file: "17-networking.html",       title: "Networking: Pod network, CNI, NetworkPolicy" },
     { n: 18, file: "18-helm.html",             title: "Helm" },
     { n: 19, file: "19-operators.html",        title: "Operators, CRDs, the reconcile loop" },
-    { n: 20, file: "20-troubleshooting.html",  title: "When it's broken" },
+    { n: 20, file: "20-troubleshooting.html",  title: "When it's broken", ready: true },
     { n: 21, file: "21-observability.html",    title: "Logs, metrics and Prometheus" },
     { n: 22, file: "22-canonical.html",        title: "Kubernetes at Canonical" },
     { n: 23, file: "23-conclusion.html",       title: "Conclusion" }

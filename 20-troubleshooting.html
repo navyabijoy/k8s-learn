@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>When it's broken · Kubernetes Handbook</title>
+<meta name="description" content="Sooner or later a Pod is Pending, or ImagePullBackOff, or CrashLoopBackOff, and someone is waiting. The Linux handbook ended its troubleshooting advice with a path, not a list of commands: status, log">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="20">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>When it's broken</h1>
+            <p class="sub">A fixed path: describe, logs, events</p>
+          </div>
+          <span class="pill">Section 20</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">Sooner or later a Pod is <code>Pending</code>, or <code>ImagePullBackOff</code>, or <code>CrashLoopBackOff</code>, and someone is waiting. The Linux handbook ended its troubleshooting advice with a path, not a list of commands: status, logs, process list, <code>top</code>. Kubernetes has the same kind of path. This chapter gives you the one to use every time.</p>
+
+      <h2>The problem</h2>
+      <p>The cluster has dozens of moving parts and the status words look alarming. The beginner mistake is to try random things: delete the Pod, restart the Deployment, change a value, hope. That hides evidence and teaches nothing.</p>
+      <p>The cluster already writes down what went wrong. You just need to look in the right places, in the right order.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>Always go <strong>get, describe, logs</strong>. <code>get</code> says <em>what</em> state the Pod is in. <code>describe</code> says <em>why</em> (read the Events at the bottom). <code>logs</code> says what the <em>app</em> itself said.</p>
+      </div>
+
+      <div class="flow"><span>kubectl get pods</span><i>→</i><span>kubectl describe pod</span><i>→</i><span>kubectl logs (--previous)</span><i>→</i><span>kubectl get events</span><i>→</i><span>kubectl exec / debug</span></div>
+
+      <h2>The fixed path</h2>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get pods
+kubectl describe pod web-6d4cf56db6-abcde
+kubectl logs web-6d4cf56db6-abcde
+kubectl logs web-6d4cf56db6-abcde --previous
+kubectl get events --sort-by=.lastTimestamp
+</code></pre></div>
+      <ul>
+        <li><strong>1. <code>get pods</code></strong>: read <code>READY</code>, <code>STATUS</code>, <code>RESTARTS</code>. The <code>STATUS</code> word decides which section of this chapter you need.</li>
+        <li><strong>2. <code>describe pod</code></strong>: scroll to <code>Events:</code> at the bottom. Almost every infrastructure problem (can't schedule, can't pull, can't mount) is written there in plain words. Also read <code>State</code> and <code>Last State</code> under each container.</li>
+        <li><strong>3. <code>logs</code></strong>: what the application printed. If the container restarted, add <code>--previous</code> to read the <em>last crashed</em> run, which is usually the one you want.</li>
+        <li><strong>4. <code>get events</code></strong>: events for the whole namespace, newest last. Use it when the Pod is gone but you want to know what happened to it.</li>
+      </ul>
+
+      <h3>Who wrote that line?</h3>
+      <p>In <code>Events</code>, the <code>From</code> column names the component that wrote it. It tells you whose problem it is:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>From</th><th>Means</th><th>Typical problem</th></tr></thead>
+        <tbody>
+          <tr><td><code>default-scheduler</code></td><td>placement</td><td>no node fits (<code>FailedScheduling</code>)</td></tr>
+          <tr><td><code>kubelet</code></td><td>the node tried to run it</td><td>image pull, mounts, probes, crashes</td></tr>
+          <tr><td><code>deployment-controller</code> / <code>replicaset-controller</code></td><td>object management</td><td>quota exceeded, can't create Pods</td></tr>
+          <tr><td><code>node-controller</code></td><td>node health</td><td>node unreachable, evictions</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>Events are only kept for about <strong>one hour</strong> by default. If the trouble was yesterday, <code>describe</code> will show nothing. That is when you need logs from your logging system (chapter 21).</p>
+      </div>
+
+      <h2>Reading the status word</h2>
+
+      <h3><code>Pending</code>: no node yet, or not started</h3>
+      <p>The Pod exists, but the scheduler has not placed it, or the node has not finished setting it up. Run <code>describe</code> and read the events. Look for <code>FailedScheduling</code>:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Event says</th><th>Cause</th><th>Fix</th></tr></thead>
+        <tbody>
+          <tr><td><code>Insufficient cpu</code> / <code>Insufficient memory</code></td><td>requests are bigger than any node has free</td><td>lower the requests, or add capacity</td></tr>
+          <tr><td><code>node(s) had untolerated taint</code></td><td>nodes are tainted and the Pod does not tolerate it (chapter 15)</td><td>add a toleration, or use other nodes</td></tr>
+          <tr><td><code>didn't match Pod's node affinity/selector</code></td><td><code>nodeSelector</code> or affinity matches no node</td><td>fix the labels or the selector</td></tr>
+          <tr><td><code>unbound immediate PersistentVolumeClaims</code></td><td>the PVC has no volume (chapter 12)</td><td>fix the claim or the StorageClass</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3><code>ImagePullBackOff</code> / <code>ErrImagePull</code>: can't get the image</h3>
+      <p>The kubelet tried to download the image and failed. <code>ErrImagePull</code> is the failure. <code>ImagePullBackOff</code> is the waiting between retries, which grow longer each time. The Events line gives the real error. The usual causes:</p>
+      <ul>
+        <li>A typo in the image name or tag. (<code>manifest unknown</code> or <code>not found</code>)</li>
+        <li>A private registry with no credentials. (<code>unauthorized</code>: you need an <code>imagePullSecret</code>)</li>
+        <li>The registry is unreachable from the node, or you hit a rate limit.</li>
+      </ul>
+
+      <h3><code>CrashLoopBackOff</code>: it starts, then dies, again and again</h3>
+      <p>The container exits, the kubelet restarts it, it exits again. The kubelet waits longer between each try. <code>CrashLoopBackOff</code> is that waiting. The Pod is fine. The <strong>app</strong> keeps exiting.</p>
+      <ol>
+        <li><code>kubectl logs POD --previous</code>. This is the last run's output, and it usually names the error: missing environment variable, cannot connect to database, bad config file.</li>
+        <li><code>kubectl describe pod POD</code>. Under <code>Last State: Terminated</code>, read <code>Reason</code> and <code>Exit Code</code>.</li>
+        <li>If there are no logs at all, the process died before printing. Check the <code>command</code> and <code>args</code> and the image's entrypoint.</li>
+      </ol>
+
+      <p>The exit code is a clue, just like in a shell script:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Exit code</th><th>Usually means</th></tr></thead>
+        <tbody>
+          <tr><td><code>0</code></td><td>exited cleanly. For a long-running app that is itself a bug: it finished and stopped.</td></tr>
+          <tr><td><code>1</code></td><td>the app hit an error and quit. Read the logs.</td></tr>
+          <tr><td><code>126</code> / <code>127</code></td><td>command found but not executable / command not found</td></tr>
+          <tr><td><code>137</code></td><td>killed with SIGKILL (128 + 9). Most often <strong>OOMKilled</strong>: it hit the memory limit.</td></tr>
+          <tr><td><code>139</code></td><td>segmentation fault (128 + 11)</td></tr>
+          <tr><td><code>143</code></td><td>stopped by SIGTERM (128 + 15). Normal when the Pod is being deleted.</td></tr>
+        </tbody>
+      </table></div>
+      <p>The rule is the Linux one: anything above 128 means "killed by signal (code minus 128)".</p>
+
+      <h3>Other words you will meet</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Status</th><th>What it means</th><th>Where to look</th></tr></thead>
+        <tbody>
+          <tr><td><code>ContainerCreating</code> (stuck)</td><td>image is fine, but something about the sandbox, network or volume failed</td><td>Events: <code>FailedMount</code>, <code>FailedCreatePodSandBox</code></td></tr>
+          <tr><td><code>CreateContainerConfigError</code></td><td>the Pod refers to a ConfigMap or Secret (or a key in it) that does not exist</td><td>Events, and the names in your YAML</td></tr>
+          <tr><td><code>Running</code> but <code>READY 0/1</code></td><td>the readiness probe is failing</td><td>Events: <code>Readiness probe failed</code>; the app's logs</td></tr>
+          <tr><td><code>OOMKilled</code></td><td>hit the memory limit</td><td><code>Last State</code> in <code>describe</code>; raise the limit or fix the leak</td></tr>
+          <tr><td><code>Evicted</code></td><td>the node ran short of memory or disk and removed it</td><td><code>describe pod</code> message; <code>describe node</code> conditions</td></tr>
+          <tr><td><code>Terminating</code> (stuck)</td><td>waiting on a finalizer, a node that is gone, or an app that ignores SIGTERM</td><td><code>describe pod</code>; node status</td></tr>
+          <tr><td><code>Completed</code></td><td>all containers finished successfully (normal for Jobs)</td><td>nothing: this is success</td></tr>
+        </tbody>
+      </table></div>
+
+      <h2>When logs are not enough</h2>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl logs -f web-6d4cf56db6-abcde
+kubectl logs -l app=web --tail=50 --all-containers
+kubectl exec -it web-6d4cf56db6-abcde -- sh
+kubectl debug -it web-6d4cf56db6-abcde --image=busybox:1.37 --target=nginx
+</code></pre></div>
+      <ul>
+        <li><code>logs -f</code> follows the log live. <code>-l app=web</code> reads from every Pod with that label. <code>--tail=50</code> limits the amount. <code>--all-containers</code> includes sidecars.</li>
+        <li><code>exec -it ... -- sh</code> opens a shell, if the image has one. Many modern slim images have none.</li>
+        <li><code>kubectl debug</code> solves that. It attaches a temporary <strong>ephemeral container</strong> with the tools you choose (here <code>busybox</code>) to the running Pod. <code>--target=nginx</code> makes it share the process namespace of the <code>nginx</code> container, so you can see its processes.</li>
+      </ul>
+
+      <p>Two more <code>kubectl debug</code> forms:</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl debug web-6d4cf56db6-abcde -it --copy-to=web-debug --container=nginx -- sh
+kubectl debug node/worker-1 -it --image=ubuntu
+</code></pre></div>
+      <ul>
+        <li><code>--copy-to</code> makes a copy of the Pod to experiment on, so the original keeps serving.</li>
+        <li><code>debug node/NAME</code> starts a Pod on that node with the node's filesystem mounted under <code>/host</code>. It is the way to read a node's files and logs without SSH.</li>
+      </ul>
+
+      <h3>The node itself</h3>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get nodes
+kubectl describe node worker-1
+</code></pre></div>
+      <p><code>describe node</code> lists <code>Conditions</code>: <code>Ready</code>, <code>MemoryPressure</code>, <code>DiskPressure</code>, <code>PIDPressure</code>. Any of them <code>True</code> (except <code>Ready</code>) explains evictions. If the node is <code>NotReady</code>, go to the node and treat it like any Linux machine: <code>systemctl status kubelet</code> and <code>journalctl -u kubelet -n 50</code>.</p>
+
+      <h2>When the app is unreachable</h2>
+      <p>The request path from chapters 9 and 10 gives you the order to check. Start at the app and work outwards, or at the user and work in. Either way, one layer at a time.</p>
+      <div class="flow"><span>Pod running and ready?</span><i>→</i><span>Service has endpoints?</span><i>→</i><span>right port and name?</span><i>→</i><span>Ingress / Gateway rule?</span><i>→</i><span>DNS and firewall?</span></div>
+      <ol>
+        <li><code>kubectl get pods</code>: is it <code>Running</code> and <code>READY 1/1</code>?</li>
+        <li><code>kubectl get endpointslices -l kubernetes.io/service-name=web</code>: any addresses? If empty, the selector or readiness is wrong.</li>
+        <li><code>kubectl port-forward service/web 8080:80</code> then <code>curl localhost:8080</code>: does the Service work on its own?</li>
+        <li><code>kubectl describe ingress web</code> (or the HTTPRoute): right host, path and backend? Does the Ingress controller log an error?</li>
+        <li>Only then look outside the cluster: DNS records, firewalls, load balancer.</li>
+      </ol>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li>The Linux handbook's website checklist was <code>systemctl status</code> → <code>journalctl -u</code> → <code>ps aux</code> → <code>top</code>. This chapter's path is the same shape: <code>get</code> (status) → <code>describe</code> (what the system says about it) → <code>logs</code> (<code>journalctl</code> for a Pod) → <code>exec</code> (go in and look).</li>
+        <li><code>kubectl logs -f</code> is <code>tail -f</code> or <code>journalctl -u … -f</code>. <code>--previous</code> is the log from before the restart.</li>
+        <li>Exit codes above 128 are <code>128 + signal number</code>, the same rule you saw with <code>kill -9</code>.</li>
+        <li><code>Events</code> are like the last lines of <code>systemctl status</code>: a short, recent history, not a full log.</li>
+        <li>A <code>Terminating</code> Pod that will not die is a process ignoring SIGTERM. After the grace period, SIGKILL ends it, the same <code>kill</code>/<code>kill -9</code> pair.</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Reading <code>logs</code> without <code>--previous</code> on a crash-looping Pod.</strong> You see the brand new container's first second, which may be empty. The error is in the run that just died.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Skipping <code>describe</code>.</strong> Many problems never reach the app, so there are no logs to read. The answer is in the Events.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Deleting the Pod "to see if it fixes itself".</strong> You lose the Events and the <code>Last State</code>, and a Deployment will bring back the same broken Pod. Gather the evidence first.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"<code>kubectl logs</code> shows nothing, so the app is broken."</strong> A <code>Pending</code> Pod has no container yet, so it has no logs. And an app that writes to a file instead of stdout shows nothing too. Containers should log to stdout and stderr.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Fixing things inside a running container.</strong> Editing a file after <code>exec</code> is lost the next time the container restarts. Fix the image, the ConfigMap or the manifest.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p><code>kubectl delete pod NAME --force --grace-period=0</code> removes the Pod object <strong>without waiting for the node to confirm</strong> the containers stopped. For a StatefulSet (chapter 14) that can mean two copies of the same Pod running at once, both writing to the same data. Only use it when you know the node is gone.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>Three broken Deployments. For each, find the cause using only the path from this chapter, then fix it. Do not peek at the answers until you have tried. Use a scratch namespace.</p>
+      </div>
+
+      <div class="code" data-lang="yaml" data-file="broken.yaml"><pre><code>
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken-image
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: broken-image}
+  template:
+    metadata:
+      labels: {app: broken-image}
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27-typo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken-crash
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: broken-crash}
+  template:
+    metadata:
+      labels: {app: broken-crash}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command: ["sh", "-c", "echo 'cannot connect to database at db:5432' &gt;&amp;2; exit 1"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken-pending
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: broken-pending}
+  template:
+    metadata:
+      labels: {app: broken-pending}
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27
+          resources:
+            requests:
+              cpu: "100"
+              memory: 500Gi
+</code></pre></div>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl create namespace dev
+kubectl apply -n dev -f broken.yaml
+kubectl get pods -n dev
+
+# for each broken Pod:
+kubectl describe pod -n dev &lt;pod-name&gt;
+kubectl logs -n dev &lt;pod-name&gt; --previous
+
+# the whole story in one stream
+kubectl get events -n dev --sort-by=.lastTimestamp
+
+# after you have found each cause, fix it by editing the Deployment
+kubectl set image deployment/broken-image web=nginx:1.27 -n dev
+kubectl get pods -n dev
+
+# clean up
+kubectl delete namespace dev
+</code></pre></div>
+
+      <p>What each one should teach you:</p>
+      <ul>
+        <li><strong><code>broken-image</code></strong>: <code>get</code> shows <code>ErrImagePull</code> then <code>ImagePullBackOff</code>. <code>describe</code> has an event saying the image manifest was not found. There are no logs, because the container never started.</li>
+        <li><strong><code>broken-crash</code></strong>: <code>get</code> shows <code>Error</code> then <code>CrashLoopBackOff</code>. <code>logs --previous</code> prints the message. <code>describe</code> shows <code>Exit Code: 1</code>. The cause is in the <em>app</em>, not the cluster.</li>
+        <li><strong><code>broken-pending</code></strong>: <code>get</code> shows <code>Pending</code> with no node. <code>describe</code> has a <code>FailedScheduling</code> event from the scheduler: no node has that much CPU or memory. There are no logs, because nothing was ever started.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>A Pod is stuck in Pending. How do you debug it?</summary>
+          <div class="answer">
+            <p>Pending means it hasn't been placed, or the node hasn't finished starting it. I run <code>kubectl describe pod</code> and read the Events. A <code>FailedScheduling</code> event from the scheduler tells me why: not enough CPU or memory for the requests, an untolerated taint, a node selector or affinity that matches nothing, or a PersistentVolumeClaim that isn't bound. Then I fix the cause, either the Pod's requirements or the cluster's capacity.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>A Pod is in CrashLoopBackOff. What do you do?</summary>
+          <div class="answer">
+            <p>The container keeps exiting and the kubelet keeps restarting it, with longer delays. First I read <code>kubectl logs --previous</code>, because that's the run that just died. Then <code>describe</code> for <code>Last State</code>, the reason and the exit code. Exit 1 usually means an app error. 137 usually means OOMKilled, so I look at the memory limit. If there are no logs, I check the command and entrypoint. A liveness probe that kills a slow app can also cause it.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What does exit code 137 mean?</summary>
+          <div class="answer">
+            <p>128 plus 9, so the process was killed by SIGKILL. In Kubernetes the most common reason is that it hit its memory limit and the kernel's OOM killer ended it, and <code>describe</code> shows <code>OOMKilled</code>. It can also be a forced kill after the termination grace period. I'd check <code>Last State</code>, then memory usage and the limit.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Your service isn't reachable. Walk me through your checks.</summary>
+          <div class="answer">
+            <p>I go layer by layer. Is the Pod running and ready? Does the Service have endpoints? If not, it's the selector or readiness. Does the Service work alone, using port-forward to the Service? Then the Ingress or Gateway: host, path, backend, and the controller's logs. Only after that do I look outside the cluster at DNS, firewalls and load balancers. Working in order stops me guessing.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>The image has no shell. How do you debug inside it?</summary>
+          <div class="answer">
+            <p>I use <code>kubectl debug</code> to attach an ephemeral container with the tools I need, such as busybox, to the running Pod. With <code>--target</code> it shares the process namespace of the app container, so I can see its processes. If I don't want to touch the running Pod, <code>--copy-to</code> makes a copy to experiment on. For node-level problems, <code>kubectl debug node/NAME</code> gives a Pod with the node's filesystem mounted.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Go</strong> get, describe, logs, every time. <strong>Read</strong> the Events and notice who wrote them. <strong>Use</strong> <code>--previous</code> for crashes. <strong>Collect</strong> evidence before you delete anything. <strong>Check</strong> layers in order, from the Pod outwards. <strong>Remember</strong> that events fade after about an hour, so get your logs somewhere that lasts. Say it out loud: "status, why, what the app said."</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
