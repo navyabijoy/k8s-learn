@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Labels, selectors and namespaces · Kubernetes Handbook</title>
+<meta name="description" content="A real cluster holds hundreds of objects, and they have to find each other and stay out of each other's way. Kubernetes does both with two simple tools: labels that you stick on things and search by, ">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="8">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Labels, selectors and namespaces</h1>
+            <p class="sub">How Kubernetes finds things and keeps them apart</p>
+          </div>
+          <span class="pill">Section 08</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">A real cluster holds hundreds of objects, and they have to find each other and stay out of each other's way. Kubernetes does both with two simple tools: <strong>labels</strong> that you stick on things and search by, and <strong>namespaces</strong> that split the cluster into separate rooms. You have already used both without naming them.</p>
+
+      <h2>The problem</h2>
+      <p>Two questions come up the moment the cluster has real workloads.</p>
+      <ul>
+        <li><strong>How does a Service know which Pods are its Pods?</strong> Pods are created and destroyed all the time. A fixed list of names cannot work.</li>
+        <li><strong>How do two teams share one cluster without tripping over each other?</strong> Alice's <code>web</code> and Bob's <code>web</code> cannot both exist if names are global.</li>
+      </ul>
+      <p>The Linux handbook solved a similar problem with <strong>groups</strong> ("put everyone in <code>developers</code> and give the group access") and <strong>directories</strong> (<code>/home/alice/notes.txt</code> and <code>/home/bob/notes.txt</code> can both exist). Kubernetes uses the same two ideas.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>A <strong>label</strong> is a key and value stuck on an object. A <strong>selector</strong> finds objects by their labels. A <strong>namespace</strong> is a named space that holds objects, so the same name can exist in two namespaces.</p>
+      </div>
+
+      <div class="cards">
+        <div class="card"><span class="tag">Label</span><p>A sticky note: <code>app: web</code>. Many objects can carry the same one, and one object can carry many.</p></div>
+        <div class="card"><span class="tag">Selector</span><p>A search over sticky notes: "everything with <code>app: web</code>". Services, Deployments and policies use it.</p></div>
+        <div class="card"><span class="tag">Namespace</span><p>A room. Names must be unique inside a room, not across the cluster. Policies and quotas attach to rooms.</p></div>
+        <div class="card"><span class="tag">Annotation</span><p>A note that is <em>not</em> searchable: build numbers, URLs, tool settings. Labels identify. Annotations describe.</p></div>
+      </div>
+
+      <h2>Labels</h2>
+      <div class="code" data-lang="yaml"><pre><code>
+metadata:
+  name: web
+  labels:
+    app: web
+    env: dev
+    tier: frontend
+</code></pre></div>
+      <p>Three labels on one Pod. Nothing special about <code>app</code>, <code>env</code> or <code>tier</code>. You choose them. What matters is that your team uses them the same way.</p>
+
+      <h3>Look at them, add them, remove them</h3>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get pods --show-labels
+kubectl get pods -L app,env
+kubectl label pod web tier=frontend
+kubectl label pod web tier=backend --overwrite
+kubectl label pod web tier-
+</code></pre></div>
+      <ul>
+        <li><code>--show-labels</code> adds a column with every label. <code>-L app,env</code> adds one column per label you name, which is easier to read.</li>
+        <li><code>label pod web tier=frontend</code> adds a label to a live object.</li>
+        <li><code>--overwrite</code> is needed to change one that already exists. Without it, kubectl refuses.</li>
+        <li>A trailing dash, <code>tier-</code>, removes the label.</li>
+      </ul>
+
+      <h3>Rules for labels</h3>
+      <ul>
+        <li>A key is a name, optionally with a prefix and a slash: <code>app</code>, <code>app.kubernetes.io/name</code>.</li>
+        <li>Names and values are at most 63 characters, start and end with a letter or digit, and may contain <code>-</code>, <code>_</code> and <code>.</code> in between.</li>
+        <li>Values are strings. <code>replicas: 3</code> as a label value needs quotes: <code>"3"</code>.</li>
+      </ul>
+
+      <h3>Labels worth agreeing on</h3>
+      <p>Kubernetes suggests a shared set so tools can understand each other. They all live under <code>app.kubernetes.io/</code>:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Label</th><th>Means</th><th>Example</th></tr></thead>
+        <tbody>
+          <tr><td><code>app.kubernetes.io/name</code></td><td>the application</td><td><code>web</code></td></tr>
+          <tr><td><code>app.kubernetes.io/instance</code></td><td>this copy of it</td><td><code>web-prod</code></td></tr>
+          <tr><td><code>app.kubernetes.io/version</code></td><td>its version</td><td><code>1.4.2</code></td></tr>
+          <tr><td><code>app.kubernetes.io/component</code></td><td>its role</td><td><code>frontend</code></td></tr>
+          <tr><td><code>app.kubernetes.io/part-of</code></td><td>the larger system</td><td><code>shop</code></td></tr>
+          <tr><td><code>app.kubernetes.io/managed-by</code></td><td>the tool in charge</td><td><code>helm</code></td></tr>
+        </tbody>
+      </table></div>
+      <p>This handbook uses the short <code>app: web</code> to keep examples small. Real manifests usually use the longer set, and Helm (chapter 18) adds them for you.</p>
+
+      <h2>Selectors</h2>
+      <h3>On the command line</h3>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get pods -l app=web
+kubectl get pods -l 'env in (dev,staging)'
+kubectl get pods -l app=web,env!=prod
+kubectl get pods -l '!tier'
+</code></pre></div>
+      <ul>
+        <li><code>app=web</code>: label equals value. A comma means AND.</li>
+        <li><code>env in (dev,staging)</code>: value is one of a set. Quote it, because the shell treats the brackets specially.</li>
+        <li><code>env!=prod</code>: not equal. (It also matches objects that have no <code>env</code> label.)</li>
+        <li><code>'!tier'</code>: the label <code>tier</code> does not exist.</li>
+      </ul>
+
+      <h3>In YAML</h3>
+      <div class="code" data-lang="yaml"><pre><code>
+selector:
+  matchLabels:
+    app: web
+  matchExpressions:
+    - key: env
+      operator: In
+      values: [dev, staging]
+    - key: tier
+      operator: Exists
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+matchLabels:                    exact matches (all must hold)
+  app: web
+matchExpressions:               richer tests (all must hold, and together with matchLabels)
+  - key: env
+    operator: In                In, NotIn, Exists, DoesNotExist
+    values: [dev, staging]      required for In and NotIn
+</code></pre></div>
+      <p>Deployments, ReplicaSets, Jobs and NetworkPolicies use this form. A Service is older and simpler: it takes a plain <code>selector:</code> map of equal labels, as in chapter 9.</p>
+
+      <h3>Why this is powerful</h3>
+      <p>Everything connects by label, not by name. The Service finds Pods by <code>app: web</code>. The Deployment finds its Pods by the same label. Change a label and the connections change, with no other edit.</p>
+      <div class="flow"><span>Deployment selects app=web</span><i>·</i><span>Service selects app=web</span><i>·</i><span>both find the same Pods</span></div>
+
+      <h3>The orphan trick</h3>
+      <p>Here is something to do when a Pod is misbehaving and you want to study it without losing it. Remove the label the ReplicaSet uses:</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl label pod web-6d4cf56db6-abcde app-
+</code></pre></div>
+      <p>The ReplicaSet no longer counts that Pod as its own. It sees too few and creates a replacement. The Service also stops sending traffic to the old Pod. Your sick Pod keeps running, alone, for you to inspect. Delete it when you are done.</p>
+
+      <h3>Labels or annotations?</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th></th><th>Label</th><th>Annotation</th></tr></thead>
+        <tbody>
+          <tr><td>Used to</td><td>identify and select</td><td>describe and configure tools</td></tr>
+          <tr><td>Selectable</td><td>yes</td><td>no</td></tr>
+          <tr><td>Size</td><td>small values only</td><td>can be large</td></tr>
+          <tr><td>Examples</td><td><code>app: web</code>, <code>env: prod</code></td><td>a build URL, a change cause, ingress controller settings</td></tr>
+        </tbody>
+      </table></div>
+
+      <h2>Namespaces</h2>
+      <p>A <strong>namespace</strong> is a named space inside the cluster. Almost every object you create lives in exactly one. A fresh cluster already has four:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Namespace</th><th>For</th></tr></thead>
+        <tbody>
+          <tr><td><code>default</code></td><td>what you create when you do not choose</td></tr>
+          <tr><td><code>kube-system</code></td><td>the cluster's own parts: DNS, the proxy, the network plugin</td></tr>
+          <tr><td><code>kube-public</code></td><td>readable by everyone, rarely used</td></tr>
+          <tr><td><code>kube-node-lease</code></td><td>one small object per node, used to detect dead nodes</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl create namespace dev
+kubectl get namespaces
+kubectl get pods -n dev
+kubectl get pods -A
+kubectl config set-context --current --namespace=dev
+</code></pre></div>
+      <ul>
+        <li><code>create namespace</code> makes one. <code>get namespaces</code> lists them (short form <code>ns</code>).</li>
+        <li><code>-n dev</code> works in that namespace for one command. <code>-A</code> looks in all of them.</li>
+        <li><code>set-context --current --namespace=dev</code> changes your default so you can drop <code>-n</code>. Check <code>kubectl config view --minify | grep namespace</code> if you forget which one you are in.</li>
+      </ul>
+
+      <p>Or put the namespace in the file:</p>
+      <div class="code" data-lang="yaml"><pre><code>
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+  namespace: dev
+</code></pre></div>
+
+      <h3>Not everything lives in a namespace</h3>
+      <p>Some objects belong to the whole cluster: Nodes, Namespaces themselves, PersistentVolumes, StorageClasses, ClusterRoles. Ask the cluster which is which:</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl api-resources --namespaced=true
+kubectl api-resources --namespaced=false
+</code></pre></div>
+
+      <h3>What a namespace gives you, and what it does not</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>A namespace does give you</th><th>A namespace does not give you</th></tr></thead>
+        <tbody>
+          <tr><td>separate names: <code>web</code> in <code>dev</code> and in <code>prod</code></td><td><strong>network isolation.</strong> A Pod in <code>dev</code> can still call a Service in <code>prod</code>, by its full DNS name, unless a NetworkPolicy stops it (chapter 17).</td></tr>
+          <tr><td>a scope for <strong>RBAC</strong>: "alice may edit things in <code>dev</code>" (chapter 16)</td><td><strong>node isolation.</strong> Pods from every namespace share nodes unless you schedule otherwise (chapter 15).</td></tr>
+          <tr><td>a scope for <strong>quotas</strong> and default limits</td><td><strong>a hard security wall</strong> by itself. It is one layer of several.</td></tr>
+          <tr><td>a handle for <strong>Pod Security</strong> rules, set by labels on the namespace</td><td>a way to hide objects from cluster admins.</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Quotas and default limits</h3>
+      <p>Two objects turn a namespace into a managed budget:</p>
+      <div class="code" data-lang="yaml"><pre><code>
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: dev-quota
+  namespace: dev
+spec:
+  hard:
+    pods: "5"
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.memory: 4Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: dev-defaults
+  namespace: dev
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 64Mi
+      default:
+        memory: 128Mi
+</code></pre></div>
+      <ul>
+        <li>A <strong>ResourceQuota</strong> caps the total a namespace may use or create: five Pods, two CPUs of requests, and so on. Beyond that, creation is refused.</li>
+        <li>A <strong>LimitRange</strong> sets defaults for containers that do not say. Here, a Pod with no <code>resources</code> block gets a 100m CPU request, 64Mi memory request and a 128Mi memory limit. It fixes the "no requests at all" mistake from chapter 13 for the whole namespace.</li>
+        <li>When a quota covers CPU or memory, every Pod in the namespace <strong>must</strong> declare those requests or limits, or be rejected. A LimitRange default makes that painless.</li>
+      </ul>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li><strong>Labels are like groups.</strong> In the Linux handbook, a user can be in many groups, and you grant access to a group. A Pod can have many labels, and a Service or policy targets a label.</li>
+        <li><strong>Namespaces are like directories.</strong> <code>/home/alice/notes.txt</code> and <code>/home/bob/notes.txt</code> can both exist. <code>web</code> in <code>dev</code> and <code>web</code> in <code>prod</code> can too. And you can reach across: <code>/home/bob/notes.txt</code> from Alice's shell, <code>web.prod</code> from a Pod in <code>dev</code>.</li>
+        <li><strong><code>kubectl get -l</code> is <code>grep</code> for objects.</strong> <code>kubectl get pods -o name | grep web</code> works too, but a label is exact.</li>
+        <li><strong>Do not confuse two uses of one word.</strong> Chapter 2 had <em>Linux</em> namespaces (kernel isolation for a process). A <em>Kubernetes</em> namespace is a name scope in the API. They are unrelated, and mixing them up is a classic interview slip.</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"Namespaces isolate my teams."</strong> They separate names and let you attach permissions and quotas. They do not stop network traffic, and they do not isolate nodes. For real isolation add NetworkPolicy, RBAC, quotas and Pod Security.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Forgetting <code>-n</code>.</strong> "My Pod disappeared!" It is in another namespace. Use <code>kubectl get pods -A | grep web</code> when you are not sure.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Typos in labels.</strong> <code>app: wbe</code> in a Service selector selects nothing, and the Service silently has no endpoints. Compare labels with <code>--show-labels</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Using labels as a database.</strong> A label value is short and plain. Put a long description or a URL in an annotation.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Pod labels that two Deployments share.</strong> If two Deployments select <code>app: web</code>, they fight over the same Pods. Give each one a distinct label, such as <code>app.kubernetes.io/instance</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"A quota is on, but my Pod was created without requests."</strong> It cannot be. With a CPU or memory quota in place, a Pod without requests is rejected. Add them or add a LimitRange.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p><code>kubectl delete namespace dev</code> deletes <strong>everything inside it</strong>: Deployments, Pods, Services, Secrets, PersistentVolumeClaims. It does not ask twice. Never run it on a namespace you did not create for yourself, and check your context first.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>On the kind cluster. We make two rooms, <code>dev</code> and <code>prod</code>, put a <code>web</code> in each, and play with labels and a quota.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+# 1. two namespaces, the same Deployment name in each
+kubectl create namespace dev
+kubectl create namespace prod
+kubectl create deployment web --image=nginx:1.27 --replicas=2 -n dev
+kubectl create deployment web --image=nginx:1.27 --replicas=3 -n prod
+kubectl get deployments -A | grep web
+
+# 2. labels
+kubectl get pods -n dev --show-labels
+kubectl label namespace dev env=dev
+kubectl label pods -n dev -l app=web tier=frontend
+kubectl get pods -A -l app=web -L tier
+
+# 3. selectors
+kubectl get pods -A -l 'app=web,tier'
+kubectl get pods -A -l 'app=web,!tier'
+
+# 4. the orphan trick
+kubectl get pods -n dev
+kubectl label pod -n dev &lt;one-web-pod&gt; app-
+kubectl get pods -n dev --show-labels      # three Pods now: one without the app label
+
+# 5. reach across namespaces
+kubectl expose deployment web -n prod --port=80
+kubectl run tmp -n dev --rm -it --restart=Never --image=curlimages/curl -- curl -s -m 3 http://web.prod
+
+# 6. a quota
+kubectl apply -n dev -f - &lt;&lt;'EOF'
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: dev-quota
+spec:
+  hard:
+    pods: "3"
+EOF
+kubectl scale deployment web -n dev --replicas=6
+kubectl get pods -n dev
+kubectl describe replicaset -n dev | grep -i -A2 quota
+
+# 7. clean up
+kubectl delete namespace dev prod
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>Step 1: two Deployments with the same name, no conflict.</li>
+        <li>Step 4: after removing the label, the Pod stays <code>Running</code> but the Deployment starts a replacement, so there are now three Pods in <code>dev</code>.</li>
+        <li>Step 5: the nginx page from <code>web.prod</code>. A Pod in <code>dev</code> reached a Service in <code>prod</code>. Namespaces did not stop it.</li>
+        <li>Step 6: the Pod count stops at the quota. The ReplicaSet's events say the creation was forbidden because the quota was exceeded. (The orphaned Pod from step 4 counts too.)</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>How does a Service know which Pods to send traffic to?</summary>
+          <div class="answer">
+            <p>By labels. The Service has a selector, like <code>app: web</code>. A controller watches Pods, and any Pod in the same namespace carrying those labels, and ready, goes into the Service's EndpointSlice. There's no list of names to maintain. If I change a Pod's label, it joins or leaves the Service automatically.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What's the difference between labels and annotations?</summary>
+          <div class="answer">
+            <p>Labels identify objects and can be selected on. Services, Deployments and policies find objects by label. They're short, with limited characters. Annotations hold non-identifying information, like a build URL or settings for an ingress controller. They can be larger and can't be used in selectors.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Do namespaces isolate workloads from each other?</summary>
+          <div class="answer">
+            <p>Only partly. They separate names, and give a scope for RBAC, quotas and Pod Security settings. They don't isolate the network: by default a Pod in one namespace can call a Service in another using its full DNS name. They don't isolate nodes either. For real isolation I add NetworkPolicies, RBAC, quotas, and sometimes dedicated nodes or even separate clusters.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Which resources are cluster-scoped rather than namespaced?</summary>
+          <div class="answer">
+            <p>Nodes, Namespaces, PersistentVolumes, StorageClasses, ClusterRoles and ClusterRoleBindings, and CustomResourceDefinitions, for example. I can list them with <code>kubectl api-resources --namespaced=false</code>. Their names are unique across the whole cluster, since there's no namespace to separate them.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What's a ResourceQuota, and how is it different from a LimitRange?</summary>
+          <div class="answer">
+            <p>A ResourceQuota caps the total a namespace can use or create: total CPU and memory requests, number of Pods, and so on. Past that, new objects are refused. A LimitRange works per container or Pod. It sets default requests and limits, and minimums and maximums, so a Pod that doesn't specify any gets sensible values. They're often used together, because once a quota covers CPU or memory, every Pod must declare it.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Agree</strong> on a small set of labels and use them everywhere. <strong>Check</strong> <code>--show-labels</code> before you blame a Service. <strong>Use</strong> annotations for long or tool-specific notes. <strong>Remember</strong> that namespaces separate names, not traffic. <strong>Set</strong> quotas and default limits per namespace. And before <code>delete namespace</code>, read your context out loud.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
