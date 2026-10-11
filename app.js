@@ -28,7 +28,7 @@
     { n: 20, file: "20-troubleshooting.html",  title: "When it's broken", ready: true },
     { n: 21, file: "21-observability.html",    title: "Logs, metrics and Prometheus", ready: true },
     { n: 22, file: "22-canonical.html",        title: "Kubernetes at Canonical", ready: true },
-    { n: 23, file: "23-conclusion.html",       title: "Conclusion" }
+    { n: 23, file: "23-conclusion.html",       title: "Conclusion", ready: true }
   ];
 
   window.K8S_CHAPTERS = CHAPTERS;

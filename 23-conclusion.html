@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conclusion · Kubernetes Handbook</title>
+<meta name="description" content="You started with a question people argue about, 'why does Kubernetes exist?', and ended with a cluster you can run apps on, secure, watch and repair. The commands did not change as the chapters went o">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="23">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Conclusion</h1>
+            <p class="sub">What you can explain now</p>
+          </div>
+          <span class="pill">Section 23</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">You started with a question people argue about, "why does Kubernetes exist?", and ended with a cluster you can run apps on, secure, watch and repair. The commands did not change as the chapters went on. <code>get</code> lists, <code>describe</code> explains, <code>apply</code> declares. Controllers compare what you want with what exists, and close the gap. This last chapter puts it together, and gives you a way to say all of it out loud.</p>
+
+      <h2>What you can explain now</h2>
+      <ul>
+        <li><strong>Why</strong> Kubernetes exists: containers solve packaging, and something must decide where they run and keep them running (chapter 1).</li>
+        <li>Say what a <strong>container</strong> is: a Linux process with namespaces and cgroups, started from an image (2).</li>
+        <li>Name the parts of a <strong>cluster</strong>: API server, etcd, scheduler, controllers, kubelet, runtime. And walk through what happens on <code>kubectl apply</code> (3).</li>
+        <li>Build a <strong>local cluster</strong> and know why a laptop cluster is not production (4).</li>
+        <li>Use <strong>kubectl</strong>, read YAML, tell <code>apply</code> from <code>create</code>, and know which cluster you are talking to (5).</li>
+        <li>Explain a <strong>Pod</strong>: containers that share a network and storage, and are mortal (6).</li>
+        <li>Run <strong>Deployments</strong>, roll them out, and roll them back (7).</li>
+        <li>Find things with <strong>labels</strong>, and separate them with <strong>namespaces</strong> (8).</li>
+        <li>Give Pods a stable address with <strong>Services</strong> and DNS, and debug an empty one (9).</li>
+        <li>Route outside traffic with <strong>Ingress</strong> or <strong>Gateway API</strong>, and say why one is frozen and ingress-nginx is retired (10).</li>
+        <li>Keep config out of images with <strong>ConfigMaps</strong> and treat <strong>Secrets</strong> honestly: base64 is not encryption (11).</li>
+        <li>Keep data with <strong>PVs, PVCs and StorageClasses</strong> (12).</li>
+        <li>Set <strong>probes, requests and limits</strong>, and explain self-healing as kubelet plus controllers (13).</li>
+        <li>Pick between <strong>StatefulSets, DaemonSets, Jobs and CronJobs</strong> (14).</li>
+        <li>Steer Pods with <strong>taints, tolerations and affinity</strong>, and drain a node safely (15).</li>
+        <li>Grant exactly the right access with <strong>RBAC</strong> and <strong>ServiceAccounts</strong> (16).</li>
+        <li>Describe the <strong>Pod network</strong>, <strong>CNI</strong>, and <strong>NetworkPolicy</strong>, including the policy that does nothing (17).</li>
+        <li>Package and upgrade with <strong>Helm</strong> (18).</li>
+        <li>Explain <strong>CRDs, operators</strong> and the <strong>reconcile loop</strong> (19).</li>
+        <li>Debug with <strong>describe, logs, events</strong> in a fixed order (20).</li>
+        <li>Collect <strong>logs and metrics</strong>, and say what Prometheus does (21).</li>
+        <li>Say how <strong>MicroK8s, Canonical Kubernetes, Charmed Kubernetes and Juju</strong> relate (22).</li>
+      </ul>
+
+      <h2>Say it in one sentence</h2>
+      <p>In an interview you get seconds, not paragraphs. Each of these should come out in one breath. Cover the right column and test yourself.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Ask</th><th>One sentence</th></tr></thead>
+        <tbody>
+          <tr><td>What is Kubernetes?</td><td>Software that runs containers across many machines, keeping what is running equal to what you declared.</td></tr>
+          <tr><td>What is a Pod?</td><td>One or more containers that share a network and storage and are scheduled together.</td></tr>
+          <tr><td>Deployment vs ReplicaSet?</td><td>A Deployment manages rollouts by creating a ReplicaSet per version, and each ReplicaSet keeps N Pods running.</td></tr>
+          <tr><td>What does a Service do?</td><td>Gives a set of Pods one stable address and name, finding them by label and only using the ready ones.</td></tr>
+          <tr><td>Ingress vs Service?</td><td>A Service exposes Pods, an Ingress routes HTTP by host and path to Services, and needs a controller to do anything.</td></tr>
+          <tr><td>ConfigMap vs Secret?</td><td>Same shape; a Secret is only base64-encoded, so its safety comes from RBAC, encryption at rest, or an external store.</td></tr>
+          <tr><td>PV, PVC, StorageClass?</td><td>A PV is real storage, a PVC is a request for it, and a StorageClass says how to make it on demand.</td></tr>
+          <tr><td>Liveness vs readiness?</td><td>Liveness failing restarts the container; readiness failing only removes the Pod from Services.</td></tr>
+          <tr><td>Request vs limit?</td><td>Requests are what the scheduler reserves; limits are what the kernel enforces: CPU is throttled, memory is killed.</td></tr>
+          <tr><td>Taint vs affinity?</td><td>Taints on nodes push Pods away; affinity on Pods pulls them toward nodes; a toleration only permits.</td></tr>
+          <tr><td>Role vs ClusterRole?</td><td>A Role is permissions in one namespace, a ClusterRole is cluster-wide, and bindings attach either to subjects.</td></tr>
+          <tr><td>What is CNI?</td><td>The standard the runtime uses to ask a plugin to give each Pod an IP and connect it to the network.</td></tr>
+          <tr><td>NetworkPolicy catch?</td><td>It is only enforced if your network plugin supports it, so you test that a deny actually denies.</td></tr>
+          <tr><td>Helm vs operator?</td><td>Helm installs software from templates; an operator keeps running it, with application-specific knowledge.</td></tr>
+          <tr><td>What is the reconcile loop?</td><td>Compare desired state to actual state, close the gap, repeat, so the system heals itself.</td></tr>
+          <tr><td>Pod stuck Pending?</td><td>Run describe and read the scheduler's event: usually resources, taints, selectors or an unbound claim.</td></tr>
+          <tr><td>CrashLoopBackOff?</td><td>The container keeps exiting; read <code>logs --previous</code> and the exit code.</td></tr>
+          <tr><td>Control plane down?</td><td>Running Pods keep running, but nothing changes: no scheduling, scaling, or new self-healing.</td></tr>
+          <tr><td>Canonical's Kubernetes?</td><td>Three distributions: MicroK8s as a snap, Canonical Kubernetes as a snap or charm, and Charmed Kubernetes through Juju.</td></tr>
+        </tbody>
+      </table></div>
+
+      <h2>How to answer out loud</h2>
+      <p>Every chapter followed the same shape. It is also a good shape for a spoken answer. Use it when you are asked "explain X":</p>
+      <ol>
+        <li><strong>The problem.</strong> "Pod IPs change, so how does one app find another?"</li>
+        <li><strong>The idea, in one sentence.</strong> "A Service is a stable virtual IP and name that selects Pods by label."</li>
+        <li><strong>One small example.</strong> "A Service called <code>web</code> with <code>selector: app=web</code> and port 80."</li>
+        <li><strong>The common mistake.</strong> "People forget the selector must match the Pod labels, so it has no endpoints."</li>
+        <li><strong>The Linux you know.</strong> "It is like a reverse proxy, built from kernel rules, rebuilt from labels."</li>
+      </ol>
+      <p>That is about forty seconds. It shows you understand why, not only what. And if you do not know something, say the path you would take: "I'd check <code>kubectl explain</code>", "I'd read the events first". Knowing how to find out is a real skill.</p>
+
+      <h2>A worked example, all together</h2>
+      <p>Here is the whole handbook in one file. A small web app with its own namespace and identity, config, a secret, a Deployment with probes, limits and a locked-down security context, a Service, a disruption budget, and network rules. Read it top to bottom and name the chapter for each piece.</p>
+
+      <div class="code" data-lang="yaml" data-file="capstone.yaml"><pre><code>
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web
+  namespace: shop
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-config
+  namespace: shop
+data:
+  LOG_LEVEL: "info"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: web-secret
+  namespace: shop
+type: Opaque
+stringData:
+  api-key: not-a-real-key
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: shop
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      serviceAccountName: web
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: web
+      containers:
+        - name: web
+          image: nginxinc/nginx-unprivileged:1.27
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: web-config
+                  key: LOG_LEVEL
+          volumeMounts:
+            - name: secret
+              mountPath: /etc/web-secret
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 3
+            failureThreshold: 20
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: secret
+          secret:
+            secretName: web-secret
+            defaultMode: 0440
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: shop
+spec:
+  selector:
+    app: web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web
+  namespace: shop
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: web
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: shop
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-clients-to-web
+  namespace: shop
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              role: client
+      ports:
+        - protocol: TCP
+          port: 8080
+</code></pre></div>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th>Piece</th><th>Chapter</th><th>Why it is there</th></tr></thead>
+        <tbody>
+          <tr><td>Namespace <code>shop</code></td><td>8</td><td>a room for the app, a scope for quotas and policy</td></tr>
+          <tr><td>ServiceAccount, token not mounted</td><td>16</td><td>its own identity; no API token because it never calls the API</td></tr>
+          <tr><td>ConfigMap and Secret</td><td>11</td><td>settings out of the image; the secret as a file, group-readable only (<code>0440</code>), with <code>fsGroup</code> so the non-root app can read it</td></tr>
+          <tr><td>Deployment with 3 replicas</td><td>7</td><td>stays up; rolling update with <code>maxUnavailable: 0</code></td></tr>
+          <tr><td>Three probes</td><td>13</td><td>startup for slow boots, readiness for traffic, liveness for stuck processes</td></tr>
+          <tr><td>Requests and a memory limit</td><td>13</td><td>honest scheduling; memory cannot run away</td></tr>
+          <tr><td>Topology spread</td><td>15</td><td>replicas do not all land on one node</td></tr>
+          <tr><td>Security contexts</td><td>16</td><td>non-root, no escalation, no extra Linux capabilities</td></tr>
+          <tr><td>Unprivileged nginx on 8080</td><td>2</td><td>a non-root user cannot bind port 80</td></tr>
+          <tr><td>Service</td><td>9</td><td>one stable name, selecting Pods by label</td></tr>
+          <tr><td>PodDisruptionBudget</td><td>15</td><td>a drain can never take the app below 2 Pods</td></tr>
+          <tr><td>Two NetworkPolicies</td><td>17</td><td>deny all in, then allow only <code>role=client</code> Pods on port 8080</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>No single object is clever. The skill is knowing <strong>which small object solves which small problem</strong>, and that they connect through labels, names and the same API.</p>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Check</strong> the context before you change anything. <strong>Pin</strong> image tags and chart versions. <strong>Declare</strong> with <code>apply</code>, keep files in git, and <strong>diff</strong> before you apply. <strong>Give</strong> every app a readiness probe and honest requests. <strong>Use</strong> Deployments, not bare Pods. <strong>Start</strong> closed with RBAC and NetworkPolicy, and <strong>test</strong> that a deny denies. <strong>Never</strong> commit Secrets, and say "base64 is not encryption". <strong>Go</strong> describe, logs, events, in that order. <strong>Back up</strong> etcd and your volumes. And when you do not know, say how you would find out.</p>
+      </div>
+
+      <p>The next time something breaks, you already have a path: <strong>get</strong> the state, <strong>describe</strong> for why, <strong>logs</strong> for what the app said, then <strong>events</strong> and <strong>exec</strong>. The next time someone asks "what is Kubernetes?", you already have a sentence.</p>
+      <p>Kubernetes will keep feeling large. That is normal. The loop still runs: look at what you want, look at what you have, close the gap. The API server is still the only front door. The kubelet is still a Linux service on a Linux machine. Everything in this handbook is a way of looking at that same system, clearly enough to change it on purpose.</p>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>Apply the capstone to your kind cluster, prove each part works, then break one thing at a time and fix it with the chapter 20 path. Save the YAML above as <code>capstone.yaml</code>.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl config current-context
+kubectl apply -f capstone.yaml
+kubectl rollout status deployment/web -n shop
+kubectl get all,pdb,networkpolicy,configmap,secret -n shop
+
+# who is where, and how are they spread?
+kubectl get pods -n shop -o wide
+
+# does the Service work for an allowed client?
+kubectl run client -n shop --image=curlimages/curl --labels=role=client -- sleep 3600
+kubectl wait -n shop --for=condition=Ready pod/client --timeout=60s
+kubectl exec -n shop client -- curl -s -m 3 -o /dev/null -w "%{http_code}\n" http://web
+
+# and for a stranger? (blocked only if your CNI enforces NetworkPolicy)
+kubectl run stranger -n shop --image=curlimages/curl -- sleep 3600
+kubectl wait -n shop --for=condition=Ready pod/stranger --timeout=60s
+kubectl exec -n shop stranger -- curl -s -m 3 -o /dev/null -w "%{http_code}\n" http://web
+
+# is the secret really a file, readable only by the app's group (0440)?
+kubectl exec -n shop deploy/web -- ls -lL /etc/web-secret
+kubectl exec -n shop deploy/web -- id
+
+# break and fix: a bad image
+kubectl set image deployment/web web=nginxinc/nginx-unprivileged:does-not-exist -n shop
+kubectl rollout status deployment/web -n shop --timeout=30s
+kubectl get pods -n shop
+kubectl describe pod -n shop -l app=web | tail -20
+kubectl rollout undo deployment/web -n shop
+
+# try to drain a node and watch the PDB protect you
+kubectl drain handbook-worker --ignore-daemonsets --delete-emptydir-data
+kubectl uncordon handbook-worker
+
+# clean up
+kubectl delete namespace shop
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>The Pods spread over different nodes, and run as a non-root user (<code>id</code> prints a UID that is not 0).</li>
+        <li><code>client</code> gets <code>200</code>. <code>stranger</code> gets <code>000</code> if your plugin enforces policy, <code>200</code> if it does not. Either way you now know something true about your cluster.</li>
+        <li>The Secret file has mode <code>-r--r-----</code>: readable by its owner and group, not by everyone. <code>id</code> shows group 101 among the app's groups, which is what <code>fsGroup</code> added.</li>
+        <li>The bad image leaves the old Pods serving while the new one fails. You found the cause with <code>describe</code>, and <code>rollout undo</code> fixed it.</li>
+        <li>The drain evicts Pods one at a time, never dropping below the budget.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>The big, joined-up ones. Click, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>Walk me through what happens from a user typing a URL to a Pod answering.</summary>
+          <div class="answer">
+            <p>DNS resolves the name to the entry point, usually a cloud load balancer. That sends the request to the Ingress or Gateway controller, which is a proxy running in Pods inside the cluster. It terminates TLS and matches the host and path against its rules to pick a Service. The Service has a virtual IP, and kube-proxy rules, or the CNI, on that node rewrite the destination to one ready Pod from its EndpointSlice. The Pod network, built by the CNI, carries the packet to that Pod, possibly across nodes, and the container answers. NetworkPolicies may allow or block it at the Pod.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How would you deploy a stateless web app so it's reliable and secure?</summary>
+          <div class="answer">
+            <p>A Deployment with at least three replicas, spread across nodes with topology spread constraints, and a rolling update strategy with maxUnavailable zero. Startup, readiness and liveness probes, and memory and CPU requests with a memory limit. A Service in front, and an Ingress or Gateway for outside traffic with TLS. Config in a ConfigMap and secrets from a proper store. A PodDisruptionBudget so drains can't take it down, and an HPA if load varies. Security: its own ServiceAccount with no extra rights, non-root, no privilege escalation, dropped capabilities, and a default-deny NetworkPolicy with only the needed allows.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How would you explain Kubernetes to someone who isn't technical?</summary>
+          <div class="answer">
+            <p>Imagine you run lots of small programs on lots of computers. Kubernetes is the manager that decides which computer runs which program, restarts the ones that crash, adds more copies when it gets busy, and updates them without stopping the service. You tell it what you want, three copies of this program, always, and it keeps checking and fixing until reality matches.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What are the most important things to secure in a cluster?</summary>
+          <div class="answer">
+            <p>Access to the API: strong authentication and least-privilege RBAC, with very few cluster-admins. Secrets: restrict who can read them, encrypt etcd at rest, and keep them out of git. The workloads: non-root, no privilege escalation, Pod Security Admission enforced per namespace. The network: default-deny NetworkPolicies on a CNI that actually enforces them. And the supply chain: pinned, scanned images from trusted registries. Plus keeping Kubernetes and nodes patched, and audit logging so I can see what happened.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What would you do in your first week joining a team that runs Kubernetes?</summary>
+          <div class="answer">
+            <p>Learn the shape of the platform before changing it: which distribution and version, how clusters are created and upgraded, which CNI, ingress and storage, and how deploys happen, whether GitOps or pipelines. I'd read the runbooks and recent incidents, check how monitoring and alerting work, and find out how access is granted. Then I'd pick up a small change in a non-production cluster and follow it all the way through to production, asking questions as I go.</p>
+          </div>
+        </details>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
