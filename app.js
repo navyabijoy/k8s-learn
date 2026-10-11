@@ -18,7 +18,7 @@
     { n: 10, file: "10-ingress.html",          title: "Ingress" },
     { n: 11, file: "11-config-secrets.html",   title: "ConfigMaps and Secrets" },
     { n: 12, file: "12-storage.html",          title: "Storage: volumes, PV, PVC" },
-    { n: 13, file: "13-probes-resources.html", title: "Probes, requests, limits, self-healing" },
+    { n: 13, file: "13-probes-resources.html", title: "Probes, requests, limits, self-healing", ready: true },
     { n: 14, file: "14-workloads.html",        title: "StatefulSets, DaemonSets, Jobs, CronJobs" },
     { n: 15, file: "15-scheduling.html",       title: "Scheduling: taints, tolerations, affinity" },
     { n: 16, file: "16-rbac.html",             title: "RBAC and ServiceAccounts" },

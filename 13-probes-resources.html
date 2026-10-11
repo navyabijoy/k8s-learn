@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Probes, requests, limits, self-healing · Kubernetes Handbook</title>
+<meta name="description" content="'Running' does not mean 'working'. And one greedy app can starve its neighbours. This chapter covers the three tools Kubernetes gives you for both problems: probes, requests and limits. Then it puts t">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="13">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Probes, requests, limits, self-healing</h1>
+            <p class="sub">How Kubernetes decides a Pod is alive, ready and big enough</p>
+          </div>
+          <span class="pill">Section 13</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">"Running" does not mean "working". And one greedy app can starve its neighbours. This chapter covers the three tools Kubernetes gives you for both problems: probes, requests and limits. Then it puts them together and explains what self-healing really is, because it is not magic.</p>
+
+      <h2>The problem</h2>
+      <p>Three real situations:</p>
+      <ul>
+        <li>Your app starts, opens its port, and then deadlocks. The process is alive. Every request hangs. Kubernetes sees a running container and is happy.</li>
+        <li>Your app takes 40 seconds to warm up. For those 40 seconds the Service sends it traffic and users get errors.</li>
+        <li>Another team's app eats all the memory on a node. Yours gets killed for no fault of its own.</li>
+      </ul>
+      <p>In each case Kubernetes needs to be told something about your app that it cannot guess.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p><strong>Probes</strong> tell Kubernetes whether your app is alive and ready. <strong>Requests</strong> tell it how much room to reserve. <strong>Limits</strong> tell it the most your app may take.</p>
+      </div>
+
+      <div class="cards">
+        <div class="card"><span class="tag">Liveness</span><p>"Is it stuck?" If this fails, the kubelet kills the container and restarts it.</p></div>
+        <div class="card"><span class="tag">Readiness</span><p>"Can it take traffic right now?" If this fails, the Pod is taken out of its Services. It is <em>not</em> restarted.</p></div>
+        <div class="card"><span class="tag">Startup</span><p>"Has it finished starting?" Switches off the other two until it passes, so slow starters are not killed.</p></div>
+        <div class="card"><span class="tag">Requests and limits</span><p>Requests are for the scheduler: reserve this much. Limits are for the kernel: never more than this.</p></div>
+      </div>
+
+      <h2>Probes</h2>
+      <p>Think of a doctor's checks. A <strong>startup</strong> probe asks "are you out of bed yet?". A <strong>readiness</strong> probe asks "are you fit to see patients?". A <strong>liveness</strong> probe asks "do you still have a pulse?". Different questions, different consequences.</p>
+
+      <div class="code" data-lang="yaml" data-file="web-probes.yaml"><pre><code>
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27
+          ports:
+            - containerPort: 80
+          startupProbe:
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+</code></pre></div>
+
+      <h3>Break one probe apart</h3>
+      <div class="code" data-lang="tree"><pre><code>
+livenessProbe:
+  httpGet:                 how to check: ask over HTTP
+    path: /                which URL
+    port: 80               which port
+  periodSeconds: 10        check every 10 seconds
+  failureThreshold: 3      3 failures in a row = failed
+  (timeoutSeconds: 1)      a check that takes longer than this counts as a failure
+  (initialDelaySeconds: 0) wait this long before the first check
+  (successThreshold: 1)    successes in a row to count as healthy again
+</code></pre></div>
+      <p>The ones in brackets are defaults. With these numbers, a stuck app is declared dead after about 30 seconds (3 failures, 10 seconds apart).</p>
+
+      <h3>Four ways to ask</h3>
+      <div class="code" data-lang="yaml"><pre><code>
+httpGet:                    # success = any status from 200 to 399
+  path: /healthz
+  port: 8080
+
+tcpSocket:                  # success = the port accepts a connection
+  port: 5432
+
+exec:                       # success = the command exits with 0
+  command: ["cat", "/tmp/healthy"]
+
+grpc:                       # success = the gRPC health service says SERVING
+  port: 9090
+</code></pre></div>
+      <ul>
+        <li><code>httpGet</code> is the usual choice for web apps.</li>
+        <li><code>tcpSocket</code> is for things that are not HTTP, like a database. It only proves the port is open.</li>
+        <li><code>exec</code> runs a command inside the container, like <code>kubectl exec</code>, and checks the exit code. Exit 0 is success, as it is everywhere in Linux.</li>
+        <li><code>grpc</code> uses the standard gRPC health-check protocol.</li>
+      </ul>
+
+      <h3>What each failure does</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Probe</th><th>When it fails</th><th>Effect on traffic</th></tr></thead>
+        <tbody>
+          <tr><td>Startup</td><td>past <code>failureThreshold</code></td><td>container killed and restarted. Until it succeeds, liveness and readiness do not run.</td></tr>
+          <tr><td>Liveness</td><td>past <code>failureThreshold</code></td><td>container killed and restarted (the Pod stays, the container restarts).</td></tr>
+          <tr><td>Readiness</td><td>immediately</td><td>Pod removed from Service endpoints. Container keeps running. It returns when the probe passes again.</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>The startup probe, in numbers</h3>
+      <p>The startup probe above allows up to <code>5 seconds × 30 = 150 seconds</code> for the app to come up. Only then, or as soon as it succeeds, do the other two start. Without it, you would have to guess an <code>initialDelaySeconds</code> that is long enough for the slowest start and still lets the liveness probe catch real problems later.</p>
+
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p><strong>Never let a liveness probe check something outside the container</strong>: a database, a cache, another service. If that dependency has an outage, every Pod fails liveness, every Pod restarts, and a small outage becomes a big one. Put dependency checks in <em>readiness</em>, where the worst outcome is "take me out of rotation". Liveness should only answer "is this process itself stuck?"</p>
+      </div>
+
+      <h2>Requests and limits</h2>
+      <div class="code" data-lang="yaml"><pre><code>
+resources:
+  requests:
+    cpu: 250m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
+</code></pre></div>
+
+      <div class="code" data-lang="tree"><pre><code>
+cpu: 250m          250 millicores = a quarter of one CPU core ("500m" = half, "1" = one core)
+memory: 128Mi      128 mebibytes. Mi = 1024*1024 bytes. Not the same as M (1000*1000).
+requests           what the scheduler RESERVES for you on a node
+limits             the most you may use. The kernel enforces it.
+</code></pre></div>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th></th><th>Request</th><th>Limit</th></tr></thead>
+        <tbody>
+          <tr><td>Who uses it</td><td>the <strong>scheduler</strong></td><td>the <strong>kernel</strong> (through cgroups)</td></tr>
+          <tr><td>When</td><td>when picking a node for the Pod</td><td>all the time the container runs</td></tr>
+          <tr><td>Going over (CPU)</td><td>allowed if the node has spare CPU</td><td>the container is <strong>throttled</strong>: slowed, not killed</td></tr>
+          <tr><td>Going over (memory)</td><td>allowed if the node has spare memory</td><td>the container is <strong>OOM-killed</strong> (out of memory)</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>CPU is <strong>compressible</strong>: if you want too much, you wait. Memory is <strong>not</strong>: if you want too much, you die. That one fact explains most resource surprises.</p>
+      </div>
+
+      <h3>How the scheduler uses requests</h3>
+      <p>Each node has an <strong>allocatable</strong> amount of CPU and memory (what is left after the OS and Kubernetes itself). The scheduler adds up the <em>requests</em> of the Pods already on a node and only places a new Pod if its requests fit in what remains. It looks at requests, not at what Pods actually use right now.</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl describe node &lt;node-name&gt;
+</code></pre></div>
+      <p>Look for the <code>Allocated resources</code> section. It shows the sum of requests and limits against the node's capacity. When a Pod sits in <code>Pending</code> with an event like <code>0/3 nodes are available: 3 Insufficient cpu</code>, this is where the sum ran out.</p>
+
+      <h3>QoS classes: who is evicted first</h3>
+      <p>From your requests and limits, Kubernetes gives every Pod a <strong>Quality of Service</strong> class. When a node runs low on memory, it decides whom to evict by class.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Class</th><th>How you get it</th><th>Evicted</th></tr></thead>
+        <tbody>
+          <tr><td><code>Guaranteed</code></td><td>every container has CPU and memory requests <em>and</em> limits, and requests equal limits</td><td>last</td></tr>
+          <tr><td><code>Burstable</code></td><td>at least one request or limit set, but not Guaranteed</td><td>in the middle</td></tr>
+          <tr><td><code>BestEffort</code></td><td>no requests or limits at all</td><td>first</td></tr>
+        </tbody>
+      </table></div>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get pod web-xyz -o jsonpath='{.status.qosClass}'
+</code></pre></div>
+      <p>Every Pod you ran without a <code>resources</code> block, including the chapter 6 Pod, is <code>BestEffort</code>. That is fine for a lab and a bad idea for production.</p>
+
+      <h2>How self-healing actually works</h2>
+      <p>"Kubernetes is self-healing" is true, but there is no healer. There are several small loops, each watching for one kind of failure. Know which loop handles which.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>What fails</th><th>Who notices</th><th>What happens</th></tr></thead>
+        <tbody>
+          <tr><td>A container crashes</td><td>the <strong>kubelet</strong>, on that node</td><td>Restarts it in place, with growing delays. Repeated crashes show as <code>CrashLoopBackOff</code>.</td></tr>
+          <tr><td>A container hangs (liveness fails)</td><td>the <strong>kubelet</strong></td><td>Kills and restarts that container.</td></tr>
+          <tr><td>A Pod is not ready (readiness fails)</td><td>the <strong>kubelet</strong> reports it, the endpoints controller reacts</td><td>Pod removed from Service endpoints. No restart.</td></tr>
+          <tr><td>A Pod is deleted or evicted</td><td>the <strong>ReplicaSet controller</strong></td><td>Creates a new Pod. The scheduler picks a node.</td></tr>
+          <tr><td>A node stops reporting</td><td>the <strong>node lifecycle controller</strong></td><td>Marks the node <code>NotReady</code> and taints it. Pods on it are evicted after a grace period (300 seconds by default), then replaced elsewhere.</td></tr>
+          <tr><td>Load grows</td><td>the <strong>HorizontalPodAutoscaler</strong> (if you made one)</td><td>Changes the Deployment's replica count. It needs CPU requests set to work with CPU percentages.</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="flow"><span>container problem</span><i>→</i><span>kubelet fixes it on the node</span><i>·</i><span>Pod or node problem</span><i>→</i><span>controllers replace Pods elsewhere</span></div>
+
+      <p>Notice the split. The <strong>kubelet</strong> handles anything inside a Pod on its own node. The <strong>controllers</strong> handle anything that needs a Pod to appear somewhere else. A bare Pod gets the first kind of healing only.</p>
+
+      <h3>Shutting down politely</h3>
+      <p>When a Pod is deleted, two things start at about the same time: the Pod is removed from Service endpoints, and its containers get SIGTERM. Both take a moment to spread. For a short time, traffic can still arrive at a Pod that is already shutting down.</p>
+      <div class="code" data-lang="yaml"><pre><code>
+spec:
+  terminationGracePeriodSeconds: 30
+  containers:
+    - name: nginx
+      image: nginx:1.27
+      lifecycle:
+        preStop:
+          exec:
+            command: ["sleep", "5"]
+</code></pre></div>
+      <ul>
+        <li><code>terminationGracePeriodSeconds</code> is how long the Pod gets between SIGTERM and SIGKILL. Default 30. Same as <code>kill</code> then <code>kill -9</code> from the Linux handbook.</li>
+        <li><code>preStop</code> runs <em>before</em> SIGTERM. A short <code>sleep</code> gives the endpoint removal time to spread, so the app is not asked to stop while traffic is still arriving. Your app must also handle SIGTERM and finish its current requests.</li>
+      </ul>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li><strong>Limits are cgroups.</strong> The memory limit becomes a file the kernel reads. Inside a container with cgroup v2 you can see it: <code>cat /sys/fs/cgroup/memory.max</code> and <code>cat /sys/fs/cgroup/cpu.max</code>.</li>
+        <li><strong>OOM kill</strong> is the Linux kernel's own out-of-memory killer. The container exits with code <strong>137</strong>, which is 128 plus signal 9 (SIGKILL). It is <code>kill -9</code> from the kernel, with no warning to your app.</li>
+        <li><strong>CPU throttling</strong> is the kernel's CFS scheduler handing your cgroup a time quota. When you use it up, your processes wait for the next period. That is why throttled apps get slow rather than die.</li>
+        <li><strong>Liveness</strong> is what you would do with <code>systemctl is-active</code> in a loop. <strong><code>exec</code> probes</strong> use the exit-code rule from shell scripts: <code>0</code> is success.</li>
+        <li><strong>Evicting under memory pressure</strong> is the same trade-off as choosing which process to sacrifice when a Linux box runs out of RAM. QoS classes make that choice predictable.</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>A liveness probe that is too eager on a slow-starting app.</strong> It fails during boot, the container is killed, it starts again, fails again. Forever. Add a <code>startupProbe</code> instead of just raising <code>initialDelaySeconds</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>No readiness probe.</strong> Rolling updates (chapter 7) and Services (chapter 9) treat a Pod as ready the moment its container starts. Traffic then reaches an app that is still loading.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>The same endpoint for liveness and readiness.</strong> They answer different questions. A busy app can be "not ready right now" while very much alive. If both probes fail on the same check, a busy spell causes restarts.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>No requests at all.</strong> Pods are <code>BestEffort</code>, so the scheduler packs them onto whichever node and they are the first to be evicted. Also, CPU-based autoscaling cannot compute a percentage of a request that is not there.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>A CPU limit that is too low.</strong> The app does not crash, it just gets slow, and you chase latency for hours. If you set a CPU limit, set it generously and watch for throttling. Many teams set CPU requests but no CPU limit.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>A memory limit below what the runtime needs.</strong> A Java app whose heap is bigger than the container's memory limit is <code>OOMKilled</code> again and again. Leave headroom above the heap for the rest of the process.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"RESTARTS 12 means my app crashes."</strong> It means the container was restarted 12 times. The reason can be a crash, an OOM kill, or a failing liveness probe. <code>kubectl describe pod</code> shows <code>Last State</code> and the reason.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong><code>M</code> versus <code>Mi</code>.</strong> <code>128M</code> is 128,000,000 bytes. <code>128Mi</code> is 134,217,728. Use <code>Mi</code> and <code>Gi</code>.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>Three small experiments on the kind cluster. Do them in a scratch namespace.</p>
+      </div>
+
+      <h3>Experiment 1: readiness controls traffic</h3>
+      <div class="code" data-lang="yaml" data-file="ready-demo.yaml"><pre><code>
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ready-demo
+  labels:
+    app: ready-demo
+spec:
+  containers:
+    - name: app
+      image: busybox:1.37
+      command: ["sh", "-c", "sleep 3600"]
+      readinessProbe:
+        exec:
+          command: ["cat", "/tmp/ready"]
+        periodSeconds: 3
+</code></pre></div>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl create namespace dev
+kubectl apply -n dev -f ready-demo.yaml
+kubectl get pod ready-demo -n dev            # READY 0/1: the file does not exist yet
+kubectl exec -n dev ready-demo -- touch /tmp/ready
+kubectl get pod ready-demo -n dev --watch    # within a few seconds: READY 1/1
+kubectl exec -n dev ready-demo -- rm /tmp/ready
+kubectl get pod ready-demo -n dev            # back to 0/1, and it was never restarted
+</code></pre></div>
+
+      <h3>Experiment 2: liveness restarts the container</h3>
+      <div class="code" data-lang="yaml" data-file="live-demo.yaml"><pre><code>
+apiVersion: v1
+kind: Pod
+metadata:
+  name: live-demo
+spec:
+  containers:
+    - name: app
+      image: busybox:1.37
+      args:
+        - /bin/sh
+        - -c
+        - touch /tmp/healthy; sleep 30; rm -f /tmp/healthy; sleep 600
+      livenessProbe:
+        exec:
+          command: ["cat", "/tmp/healthy"]
+        initialDelaySeconds: 5
+        periodSeconds: 5
+</code></pre></div>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl apply -n dev -f live-demo.yaml
+kubectl get pod live-demo -n dev --watch     # after about 40 seconds, RESTARTS goes to 1
+kubectl describe pod live-demo -n dev        # Events: "Liveness probe failed ... Killing"
+</code></pre></div>
+
+      <h3>Experiment 3: the memory limit kills</h3>
+      <div class="code" data-lang="yaml" data-file="oom-demo.yaml"><pre><code>
+apiVersion: v1
+kind: Pod
+metadata:
+  name: oom-demo
+spec:
+  containers:
+    - name: stress
+      image: polinux/stress
+      command: ["stress"]
+      args: ["--vm", "1", "--vm-bytes", "250M", "--vm-hang", "1"]
+      resources:
+        requests:
+          memory: 50Mi
+        limits:
+          memory: 100Mi
+</code></pre></div>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl apply -n dev -f oom-demo.yaml
+kubectl get pod oom-demo -n dev --watch      # STATUS flips to OOMKilled, then CrashLoopBackOff
+kubectl describe pod oom-demo -n dev         # Last State: Terminated, Reason: OOMKilled, Exit Code: 137
+kubectl get pod oom-demo -n dev -o jsonpath='{.status.qosClass}'   # Burstable
+</code></pre></div>
+
+      <div class="code" data-lang="bash"><pre><code>
+# clean up
+kubectl delete namespace dev
+</code></pre></div>
+
+      <p>What to look for: in experiment 1 the Pod was <em>never restarted</em>, just made unready. In experiment 2 the restart count rose. In experiment 3, <code>Exit Code: 137</code> is the kernel's SIGKILL, and the class is <code>Burstable</code> because requests and limits are set but not equal.</p>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>What's the difference between liveness, readiness and startup probes?</summary>
+          <div class="answer">
+            <p>Liveness asks "is this container stuck?". If it fails, the kubelet restarts the container. Readiness asks "can it take traffic now?". If it fails, the Pod is taken out of Service endpoints but not restarted. Startup asks "has it finished booting?". Until it passes, the other two are disabled, so slow-starting apps don't get killed. They answer different questions, so they usually check different things.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Why shouldn't a liveness probe check the database?</summary>
+          <div class="answer">
+            <p>Because when the database has a problem, every Pod would fail liveness at once, and the kubelet would restart all of them. Restarting doesn't fix a database. It just adds load and turns a partial outage into a total one. Dependency checks belong in readiness, where the effect is only that the Pod stops getting traffic. Liveness should only check the process itself.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What's the difference between a request and a limit?</summary>
+          <div class="answer">
+            <p>A request is what the scheduler reserves when it picks a node. It adds up requests on each node and only places the Pod if they fit. A limit is the maximum the container may use, enforced by the kernel through cgroups. Over the CPU limit, the container is throttled. Over the memory limit, it's OOM-killed. So CPU is compressible and memory isn't.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Explain the QoS classes.</summary>
+          <div class="answer">
+            <p>Kubernetes derives them from requests and limits. Guaranteed means every container has CPU and memory requests equal to limits. Burstable means some requests or limits are set but not that. BestEffort means none are set. When a node is short of memory, it evicts BestEffort Pods first, then Burstable ones over their requests, and Guaranteed last. So for important workloads I set requests, and often make them equal to limits for memory.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>A node dies. How long until its Pods run elsewhere, and who does it?</summary>
+          <div class="answer">
+            <p>The kubelet stops reporting, and after a grace period the node lifecycle controller marks the node NotReady and taints it. Pods get a default toleration for that taint of 300 seconds, so after about five minutes they are evicted. The ReplicaSet controller sees fewer Pods than it wants and creates new ones, and the scheduler places them on healthy nodes. If I need it faster I can lower the toleration seconds on the Pods, at the risk of reacting to brief network blips.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Give</strong> every app a readiness probe, and a startup probe if it boots slowly. <strong>Keep</strong> liveness simple and local. <strong>Set</strong> memory requests and limits, and CPU requests. <strong>Remember</strong> that CPU slows you down and memory kills you. <strong>Read</strong> <code>Last State</code> in <code>describe</code> before blaming the app. And explain self-healing as what it is: the kubelet for the container, controllers for the Pod and node.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
