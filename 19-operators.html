@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operators, CRDs and the reconcile loop · Kubernetes Handbook</title>
+<meta name="description" content="Chapter 3 said that controllers compare desired state with actual state, forever. Chapter 14 said a StatefulSet cannot run your database cluster for you. This chapter closes the loop: Kubernetes lets ">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="19">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Operators, CRDs and the reconcile loop</h1>
+            <p class="sub">Teaching Kubernetes new nouns</p>
+          </div>
+          <span class="pill">Section 19</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">Chapter 3 said that controllers compare desired state with actual state, forever. Chapter 14 said a StatefulSet cannot run your database cluster for you. This chapter closes the loop: Kubernetes lets you add <em>your own</em> kinds of object and write <em>your own</em> controller. That combination has a name, the operator, and it is why cert-manager, Prometheus and most databases on Kubernetes work the way they do.</p>
+
+      <h2>The problem</h2>
+      <p>Kubernetes knows nouns like Pod, Deployment and Service. It does not know "a PostgreSQL cluster". Yet running one takes real knowledge:</p>
+      <ul>
+        <li>start the primary first, then the replicas, and wire up replication,</li>
+        <li>if the primary dies, promote a replica and repoint clients,</li>
+        <li>take backups on a schedule and test restores,</li>
+        <li>upgrade versions in a safe order.</li>
+      </ul>
+      <p>A person who knows those steps writes them in a <strong>runbook</strong>, and someone is paged to follow it. You would rather the cluster did it. For that, Kubernetes needs a new noun, <code>PostgresCluster</code>, and a program that knows what that noun means.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>A <strong>CustomResourceDefinition</strong> (CRD) adds a new kind to the Kubernetes API. A <strong>controller</strong> watches objects of that kind and makes reality match them. An <strong>operator</strong> is a custom controller that carries a human operator's knowledge of one application.</p>
+      </div>
+
+      <div class="cards">
+        <div class="card"><span class="tag">CRD</span><p>The <em>definition</em> of a new kind: its name, its fields, its validation. Like adding a new table to a database.</p></div>
+        <div class="card"><span class="tag">Custom resource (CR)</span><p>An <em>instance</em> of that kind: your <code>PostgresCluster</code> called <code>orders-db</code>. Like a row in that table.</p></div>
+        <div class="card"><span class="tag">Controller</span><p>A program that watches those objects and acts on them. Without it, a CR is just stored data.</p></div>
+        <div class="card"><span class="tag">Operator</span><p>A CRD plus a controller that encodes how to run something: install, scale, back up, fail over, upgrade.</p></div>
+      </div>
+
+      <div class="flow"><span>You write a CR <small>(spec: what you want)</small></span><i>→</i><span>Controller sees it</span><i>→</i><span>Creates Deployments, StatefulSets, Services</span><i>→</i><span>Writes status back</span><i>→</i><span>Watches, and repeats</span></div>
+
+      <h2>The reconcile loop</h2>
+      <p>You have already seen this loop. The ReplicaSet controller runs it for Pods. Every controller in Kubernetes, built in or custom, is the same shape:</p>
+      <ol>
+        <li><strong>Observe desired state:</strong> read the object's <code>spec</code>.</li>
+        <li><strong>Observe actual state:</strong> look at what exists, in the cluster and sometimes outside it.</li>
+        <li><strong>Compare.</strong> Same? Do nothing.</li>
+        <li><strong>Act</strong> to close the gap: create, update or delete things.</li>
+        <li><strong>Write <code>status</code></strong> so people can see what is going on.</li>
+        <li>Wait for the next change, or the next timer, and go again.</li>
+      </ol>
+
+      <h3>Why it is built this way</h3>
+      <ul>
+        <li><strong>It reacts to state, not events.</strong> A controller does not say "a Pod was deleted, so make one". It says "I want three and I see two, so make one". If the controller was down when the Pod died, it still fixes things when it comes back. Programmers call this <em>level-triggered</em>, as opposed to edge-triggered.</li>
+        <li><strong>It must be idempotent.</strong> Running the loop twice must give the same result as once. Nothing breaks if it fires a hundred times.</li>
+        <li><strong>It is safe to crash.</strong> The truth lives in the API, not in the controller's memory.</li>
+      </ul>
+
+      <h3>Three pieces every real controller uses</h3>
+      <ul>
+        <li><strong>Owner references.</strong> When a controller creates a Deployment for your CR, it marks the CR as its <em>owner</em>. Delete the CR and Kubernetes's garbage collector deletes everything it owns. That is the <code>ownerReferences</code> you meet when you ask <code>kubectl get pod -o yaml</code> and see a ReplicaSet as the owner.</li>
+        <li><strong>Finalizers.</strong> A name in <code>metadata.finalizers</code> says "do not delete me until I have cleaned up". The controller removes it when its cleanup (say, deleting a cloud disk) is done. A Pod stuck in <code>Terminating</code> is often waiting on a finalizer.</li>
+        <li><strong>Status and conditions.</strong> The controller writes progress into <code>status</code>: "Ready", "Degraded", the current primary. This is how you ask an operator "are you okay?" with <code>kubectl describe</code>.</li>
+      </ul>
+
+      <h2>A CRD, by hand</h2>
+      <p>Here is a tiny new kind called <code>Website</code>. It has two fields: an image and a replica count.</p>
+      <div class="code" data-lang="yaml" data-file="website-crd.yaml"><pre><code>
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: websites.example.com
+spec:
+  group: example.com
+  scope: Namespaced
+  names:
+    plural: websites
+    singular: website
+    kind: Website
+    shortNames: ["ws"]
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: ["image"]
+              properties:
+                image:
+                  type: string
+                replicas:
+                  type: integer
+                  minimum: 1
+                  default: 1
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+metadata.name: websites.example.com   must be PLURAL.GROUP
+spec:
+  group: example.com                  the API group: example.com/v1 will be the apiVersion
+  scope: Namespaced                   Website objects live in a namespace (or Cluster for cluster-wide)
+  names:
+    kind: Website                     what you write in kind:
+    plural: websites                  what you type in kubectl get websites
+    shortNames: [ws]                  kubectl get ws
+  versions:
+    - name: v1, served, storage       one version, accepted by the API and used for storage
+      schema: openAPIV3Schema         the VALIDATION: image is required, replicas is an integer >= 1
+      subresources: status: {}        gives the object a separate /status the controller writes to
+</code></pre></div>
+
+      <p>Once the CRD is applied, you can create objects of the new kind:</p>
+      <div class="code" data-lang="yaml" data-file="blog.yaml"><pre><code>
+apiVersion: example.com/v1
+kind: Website
+metadata:
+  name: blog
+spec:
+  image: nginx:1.27
+  replicas: 2
+</code></pre></div>
+      <p>It works like any other object. <code>kubectl get websites</code>, <code>kubectl describe website blog</code> and <code>kubectl explain website.spec</code> all work, and the schema rejects <code>replicas: 0</code> or a missing <code>image</code>.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p><strong>Applying a CR does nothing by itself.</strong> No Pods appear. A CRD teaches the API server to <em>store</em> a new kind. It does not teach anything to <em>act</em> on it. Only a controller does that. It is exactly the Ingress lesson from chapter 10: the object is a request, the controller is the worker.</p>
+      </div>
+
+      <h2>A controller, in twelve lines of shell</h2>
+      <p>A controller is not mysterious. Here is a toy one, in bash, that gives every <code>Website</code> a Deployment. It is the reconcile loop with the safety removed.</p>
+      <div class="code" data-lang="bash" data-file="toy-controller.sh"><pre><code>
+#!/usr/bin/env bash
+NS=dev
+while true; do
+  for name in $(kubectl get websites -n "$NS" -o jsonpath='{.items[*].metadata.name}'); do
+    image=$(kubectl get website "$name" -n "$NS" -o jsonpath='{.spec.image}')
+    replicas=$(kubectl get website "$name" -n "$NS" -o jsonpath='{.spec.replicas}')
+    kubectl create deployment "site-$name" -n "$NS" --image="$image" --replicas="$replicas" \
+      --dry-run=client -o yaml | kubectl apply -n "$NS" -f - &gt;/dev/null
+  done
+  sleep 5
+done
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+for each Website                    OBSERVE desired state: what Websites exist, and what do they ask for?
+  read image and replicas           (the spec)
+  build the Deployment YAML         the state we want in the world
+  kubectl apply -n dev              ACT: apply is idempotent, so "already right" changes nothing
+sleep 5, repeat                     level-triggered: we look at state, not at events
+</code></pre></div>
+      <p>It lacks everything a real controller has: no <code>status</code>, no owner references (delete a Website and its Deployment stays), no error handling, and it polls instead of watching. Real controllers use the API's <strong>watch</strong> feature, keep a local cache, and process a work queue. The idea is identical.</p>
+
+      <h2>What an operator adds</h2>
+      <p>The toy controller turns one object into one Deployment. A real operator turns a CR into the <em>whole system</em> and then <em>operates</em> it:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Operator</th><th>New kinds it adds</th><th>What it does for you</th></tr></thead>
+        <tbody>
+          <tr><td>cert-manager</td><td><code>Certificate</code>, <code>Issuer</code></td><td>requests and renews TLS certificates, then writes the Secret an Ingress needs (chapters 10, 11)</td></tr>
+          <tr><td>Prometheus Operator</td><td><code>Prometheus</code>, <code>ServiceMonitor</code></td><td>runs Prometheus and generates its scrape config from your objects (chapter 21)</td></tr>
+          <tr><td>CloudNativePG, Zalando and others</td><td>a PostgreSQL <code>Cluster</code></td><td>creates a primary and replicas, handles failover, backups, upgrades</td></tr>
+          <tr><td>Strimzi</td><td><code>Kafka</code>, <code>KafkaTopic</code></td><td>runs Kafka, and manages topics as objects</td></tr>
+          <tr><td>Argo CD</td><td><code>Application</code></td><td>keeps the cluster in step with a git repository</td></tr>
+          <tr><td>Gateway API implementations</td><td><code>Gateway</code>, <code>HTTPRoute</code></td><td>the Gateway API from chapter 10 is itself a set of CRDs</td></tr>
+        </tbody>
+      </table></div>
+      <p>Operators are usually installed with Helm (chapter 18). The Helm chart installs the CRDs and the controller Deployment. After that you create CRs and the operator does the day-to-day work. That is the division of labour: <strong>Helm installs software. An operator <em>runs</em> it.</strong></p>
+
+      <h3>Writing one</h3>
+      <p>You rarely need to write an operator. If you do, you do not write the watch logic from scratch. Frameworks do that: <strong>Kubebuilder</strong> and <strong>controller-runtime</strong> (Go), the Operator SDK, and smaller ones for Python and other languages. You write the reconcile function. Before you start, ask whether a Helm chart, a Job or a CronJob would do. Operators are for software with real operational logic.</p>
+
+      <h2>Linux and Canonical, again</h2>
+      <ul>
+        <li><strong>The reconcile loop is a <code>while true</code> script with a conscience.</strong> You have written "check, fix if wrong, sleep, repeat". The difference is that it reads one source of truth and is safe to run twice.</li>
+        <li><strong>An operator is a sysadmin's runbook turned into code.</strong> Imagine the Linux handbook's troubleshooting path (status, logs, process list) run automatically, plus the fix.</li>
+        <li><strong><code>systemd</code> is a small controller.</strong> A unit file says "this should be running", and systemd restarts it when it is not. A Deployment controller is that, for many machines. An operator is that, with knowledge of one application.</li>
+        <li><strong>A CRD is like adding a new kind of file to <code>/etc</code></strong> that the system will not act on until you also install the daemon that reads it. The daemon is the controller.</li>
+        <li><strong>Juju charms are the same idea in another system.</strong> Canonical describes Juju as an engine for "software operators", and a charm is that operator for one application: install, configure, integrate, scale, upgrade. The nouns differ (charm, application, unit, integration) but the job is the same. Chapter 22 returns to this. It is a good thing to say in the interview: "a charm is Juju's operator".</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"I created the custom resource but nothing happened."</strong> There is no controller running, or it is not healthy. Check <code>kubectl get pods -A</code> for the operator's Pods and read their logs. A CR is only data until something acts on it.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"A StatefulSet already runs my database."</strong> It runs the Pods and the disks. It does not run replication, failover or backups. That is the operator's job.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"Operators are just Helm charts."</strong> A chart installs and stops. An operator keeps running, watching, and reacting, long after install: day-two operations.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Writing an operator for something simple.</strong> You take on a program to maintain, test and secure. Use one when the operational knowledge justifies it.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Treating <code>status</code> as something you can edit.</strong> It belongs to the controller. Your changes are overwritten on the next reconcile. Change <code>spec</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Hand-editing objects an operator owns.</strong> The operator will put them back, just as Helm and Deployments do. Change the CR.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p><strong>Deleting a CRD deletes every custom resource of that kind</strong>, and through their owner references, everything those resources created. Deleting the <code>Cluster</code> CRD of a database operator can mean deleting every database. Never remove a CRD you do not fully understand. And remember an operator often runs with broad RBAC (chapter 16). Treat installing one as giving it admin-like power over its own area.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>On the kind cluster. We install the <code>Website</code> CRD, create a CR and see that nothing happens, then run the toy controller in a second terminal and watch the loop. Save the files from this chapter as <code>website-crd.yaml</code>, <code>blog.yaml</code> and <code>toy-controller.sh</code>.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl create namespace dev
+
+# ---- 1. teach the API a new kind ----
+kubectl apply -f website-crd.yaml
+kubectl get crd websites.example.com
+kubectl api-resources | grep -i website
+kubectl explain website.spec
+
+# ---- 2. a custom resource, and nothing happens ----
+kubectl apply -n dev -f blog.yaml
+kubectl get websites -n dev
+kubectl get deployments,pods -n dev            # empty: no controller yet
+
+# ---- 3. validation comes from the schema ----
+kubectl apply -n dev -f - &lt;&lt;'EOF'
+apiVersion: example.com/v1
+kind: Website
+metadata:
+  name: bad
+spec:
+  replicas: 0
+EOF
+# rejected: image is required, and replicas must be at least 1
+
+# ---- 4. start the controller (second terminal) ----
+#   chmod +x toy-controller.sh &amp;&amp; ./toy-controller.sh
+kubectl get deployments -n dev                 # site-blog appears within seconds
+
+# ---- 5. watch the loop do its job ----
+kubectl delete deployment site-blog -n dev     # it comes back within seconds
+kubectl patch website blog -n dev --type merge -p '{"spec":{"replicas":4}}'
+kubectl get pods -n dev                        # four Pods
+
+# ---- 6. clean up: stop the controller with Ctrl+C in the other terminal ----
+kubectl delete website blog -n dev
+kubectl get deployments -n dev                 # site-blog is STILL there: no owner reference
+kubectl delete deployment site-blog -n dev
+kubectl delete crd websites.example.com        # also deletes any Website still around
+kubectl delete namespace dev
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>Step 2: the <code>Website</code> exists and you can <code>describe</code> it, but there are no Pods. A CRD only stores.</li>
+        <li>Step 3: the API server itself rejects the bad object, using the schema in the CRD. No controller was involved.</li>
+        <li>Step 5: delete the Deployment and it returns, because the loop saw "want one, have none". Change <code>replicas</code> in the CR and the Deployment follows. Desired state, actual state, the gap closed.</li>
+        <li>Step 6: deleting the Website leaves its Deployment behind. That is what owner references and finalizers are for in a real operator.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>What is a CRD, and what is a custom resource?</summary>
+          <div class="answer">
+            <p>A CustomResourceDefinition tells the API server about a new kind of object: its group, name, fields and validation schema. A custom resource is an instance of that kind. After I apply a CRD, I can <code>kubectl get</code> and <code>apply</code> the new kind like any built-in one. But a CRD only stores data. Something has to watch those objects and act, and that's a controller.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What is an operator?</summary>
+          <div class="answer">
+            <p>A CRD plus a controller that encodes the operational knowledge of running a particular application, the kind that lives in a human operator's runbook. For a database, that's creating the primary and replicas, failover, backups, and upgrades. I declare a cluster object, and the operator reconciles reality toward it and keeps doing so. Helm installs software, an operator runs it day to day.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Explain the reconcile loop.</summary>
+          <div class="answer">
+            <p>The controller reads the desired state from the object's spec, observes the actual state of the world, compares them, and takes the actions that close the gap, then writes progress into status and waits for the next change. It's level-triggered: it reacts to the current state, not to individual events, so it recovers if it missed something. And it must be idempotent, because it may run many times. The Deployment and ReplicaSet controllers work the same way as a custom operator.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What are owner references and finalizers for?</summary>
+          <div class="answer">
+            <p>Owner references link a created object to its owner, such as a Deployment owned by my custom resource, so that deleting the owner makes garbage collection delete everything it created. A finalizer is a marker saying "don't delete this object until I've cleaned up". The controller does its cleanup, for example removing an external cloud resource, then removes the finalizer. A resource stuck in Terminating is usually waiting on one.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>When would you write your own operator, and when not?</summary>
+          <div class="answer">
+            <p>When the application has real operational logic worth automating, such as failover, backups or coordinated upgrades, and there's no good existing operator. I'd use Kubebuilder or controller-runtime so I only write the reconcile logic. I wouldn't write one for something a Helm chart, a Job or a CronJob handles, because an operator is a program I'd have to build, test, secure and maintain for the life of the system.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Say</strong> "a CRD stores, a controller acts". <strong>Check</strong> the operator's Pods and logs when a CR does nothing. <strong>Change</strong> <code>spec</code>, never <code>status</code> or owned objects. <strong>Protect</strong> your CRDs, since deleting one deletes its data. <strong>Reach</strong> for an existing operator before writing your own. And describe the reconcile loop in one breath: look at what you want, look at what you have, close the gap, repeat.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
