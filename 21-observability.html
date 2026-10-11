@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Logs, metrics and Prometheus · Kubernetes Handbook</title>
+<meta name="description" content="Chapter 20 gave you the path for when something is already broken. This chapter is about knowing before it breaks, and about having evidence when it did. It covers three things: logs (what the app sai">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="21">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Logs, metrics and Prometheus</h1>
+            <p class="sub">Seeing what the cluster is doing</p>
+          </div>
+          <span class="pill">Section 21</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">Chapter 20 gave you the path for when something is already broken. This chapter is about knowing <em>before</em> it breaks, and about having evidence when it did. It covers three things: logs (what the app said), metrics (how it is doing, as numbers over time) and the standard tool for metrics, Prometheus.</p>
+
+      <h2>The problem</h2>
+      <p><code>kubectl logs</code> and <code>kubectl describe</code> are good when you are sitting at a terminal and the Pod still exists. They fail you in three ways:</p>
+      <ul>
+        <li>The Pod crashed last night and was replaced. Its logs went with it.</li>
+        <li>The node died. Its files, including every log on it, are gone.</li>
+        <li>Nothing is <em>broken</em>, but the app is slowly getting worse. Memory creeps up. Latency doubles. By the time a user complains, you have no history.</li>
+      </ul>
+      <p>You need two things that outlive Pods: <strong>logs</strong> stored somewhere central, and <strong>metrics</strong> recorded over time so you can graph them and set alarms.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p><strong>Logs</strong> say <em>what happened</em>: one line per event, for reading. <strong>Metrics</strong> say <em>how it is going</em>: numbers sampled over time, for graphing and alerting. You need both, and neither lives inside the Pod.</p>
+      </div>
+
+      <div class="cards">
+        <div class="card"><span class="tag">Logs</span><p>Text your app prints to stdout and stderr. Good for "why did this request fail?". Large and noisy.</p></div>
+        <div class="card"><span class="tag">Metrics</span><p>Numbers with a timestamp: requests per second, memory used, errors. Small, cheap, and easy to alert on.</p></div>
+        <div class="card"><span class="tag">Events</span><p>Cluster-level notes ("scheduled", "pulled", "killed"). Short-lived: about an hour (chapter 20).</p></div>
+        <div class="card"><span class="tag">Traces</span><p>The path of one request across many services. A third pillar, usually built with OpenTelemetry. Mentioned here, not covered.</p></div>
+      </div>
+
+      <h2>Logs</h2>
+      <h3>Where they go</h3>
+      <p>A container should write its logs to <strong>stdout and stderr</strong>. The container runtime captures that output and writes it to files on the node. <code>kubectl logs</code> asks the kubelet to read those files.</p>
+      <div class="flow"><span>app prints to stdout</span><i>→</i><span>runtime writes a file on the node</span><i>→</i><span>kubelet serves it</span><i>→</i><span>kubectl logs</span></div>
+      <p>On a node the files live under <code>/var/log/pods/</code>, with convenient links under <code>/var/log/containers/</code>. The kubelet rotates them by size, so old lines disappear. By default each container keeps up to five files of 10 MiB each.</p>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl logs web
+kubectl logs web --tail=20 --timestamps
+kubectl logs web --since=10m
+kubectl logs web -f
+kubectl logs web --previous
+kubectl logs -l app=web --all-containers --prefix
+</code></pre></div>
+      <ul>
+        <li><code>--tail=20</code> shows the last 20 lines. <code>--timestamps</code> adds the time to each.</li>
+        <li><code>--since=10m</code> shows only the last ten minutes.</li>
+        <li><code>-f</code> follows, like <code>tail -f</code>.</li>
+        <li><code>--previous</code> reads the run before the last restart (chapter 20).</li>
+        <li><code>-l app=web --all-containers --prefix</code> reads from every matching Pod, every container, and prefixes each line with its source so you can tell them apart.</li>
+      </ul>
+
+      <h3>Why <code>kubectl logs</code> is not enough</h3>
+      <ul>
+        <li>The files live on the node. <strong>If the Pod is deleted, or the node goes, the logs go.</strong></li>
+        <li>Rotation drops old lines.</li>
+        <li>You cannot search across fifty Pods and three days with <code>kubectl</code>.</li>
+      </ul>
+      <p>So real clusters <strong>ship logs off the node</strong>. A small agent runs on every node, which is a job for a <strong>DaemonSet</strong> (chapter 14). It tails the log files and forwards them to a central store you can search.</p>
+      <div class="flow"><span>Pods write logs</span><i>→</i><span>agent on each node <small>(DaemonSet)</small></span><i>→</i><span>central store</span><i>→</i><span>search and dashboards</span></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Role</th><th>Common choices</th></tr></thead>
+        <tbody>
+          <tr><td>Agent on each node</td><td>Fluent Bit, Vector, Promtail, Grafana Alloy, Filebeat</td></tr>
+          <tr><td>Store and search</td><td>Loki, Elasticsearch, OpenSearch, or a cloud logging service</td></tr>
+          <tr><td>Look at it</td><td>Grafana, Kibana, OpenSearch Dashboards</td></tr>
+        </tbody>
+      </table></div>
+      <p>Make logs easy to use: print one JSON object per line (<strong>structured logging</strong>) with fields like level, request ID and user, so the store can filter on them. Never log passwords or tokens (chapter 11).</p>
+
+      <h2>Metrics: two systems with different jobs</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th></th><th>metrics-server</th><th>Prometheus</th></tr></thead>
+        <tbody>
+          <tr><td>What it is</td><td>a small add-on that serves the <em>current</em> CPU and memory of Pods and nodes</td><td>a monitoring system that records many metrics over time</td></tr>
+          <tr><td>Keeps history?</td><td><strong>No</strong>, only the latest sample</td><td>yes, days to months</td></tr>
+          <tr><td>Used for</td><td><code>kubectl top</code> and autoscaling</td><td>dashboards, alerts, investigation</td></tr>
+          <tr><td>Metrics</td><td>CPU and memory only</td><td>anything: yours, the cluster's, the node's</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>metrics-server and <code>kubectl top</code></h3>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl top nodes
+kubectl top pods -A
+kubectl top pod web --containers
+</code></pre></div>
+      <p><code>top</code> shows what each node and Pod is using right now, the Kubernetes version of the Linux <code>top</code> you know. If it answers <code>Metrics API not available</code>, metrics-server is not installed. It does not come with every cluster. (Canonical Kubernetes bundles one: chapter 22.)</p>
+      <p>The same data feeds the <strong>HorizontalPodAutoscaler</strong> that chapter 13 mentioned:</p>
+      <div class="code" data-lang="yaml" data-file="web-hpa.yaml"><pre><code>
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+</code></pre></div>
+      <p>Read it as: "keep average CPU at about 50 percent of what each Pod <em>requested</em>, between 2 and 10 replicas". It needs CPU <strong>requests</strong> on the Pods (chapter 13) and a metrics source. Percent of nothing is not a number.</p>
+
+      <h2>Prometheus</h2>
+      <p>Prometheus is the standard metrics system for Kubernetes. Four ideas explain it:</p>
+      <ol>
+        <li><strong>It pulls.</strong> Apps do not send metrics. They expose a plain-text page, usually <code>/metrics</code>, and Prometheus <strong>scrapes</strong> it every few seconds.</li>
+        <li><strong>It stores time series.</strong> Each metric has a name and labels (the sticky notes again), and a value for every scrape: <code>http_requests_total{pod="web-1", status="500"}</code>.</li>
+        <li><strong>You query it with PromQL.</strong> A small language for turning samples into answers.</li>
+        <li><strong>It alerts.</strong> Rules are evaluated constantly, and firing alerts go to <strong>Alertmanager</strong>, which deduplicates and sends the page or message. <strong>Grafana</strong> draws the graphs.</li>
+      </ol>
+      <div class="flow"><span>app exposes /metrics</span><i>←</i><span>Prometheus scrapes</span><i>→</i><span>time-series database</span><i>→</i><span>PromQL: Grafana graphs, alert rules</span><i>→</i><span>Alertmanager</span></div>
+
+      <h3>The metric types</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Type</th><th>Goes…</th><th>Example</th></tr></thead>
+        <tbody>
+          <tr><td>counter</td><td>only up (resets on restart)</td><td>total requests served. You almost always want its <strong>rate</strong>.</td></tr>
+          <tr><td>gauge</td><td>up and down</td><td>memory in use, queue length</td></tr>
+          <tr><td>histogram</td><td>buckets of observations</td><td>how many requests took under 100 ms, under 500 ms… so you can compute percentiles</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>A few PromQL queries</h3>
+      <div class="code" data-lang="plain"><pre><code>
+rate(http_requests_total[5m])
+sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="dev"}[5m]))
+container_memory_working_set_bytes{namespace="dev", pod=~"web-.*"}
+kube_pod_container_status_restarts_total
+sum(kube_deployment_status_replicas_available) by (deployment)
+</code></pre></div>
+      <ul>
+        <li><code>rate(...[5m])</code> turns a counter into "per second, averaged over the last five minutes". This is the most used function.</li>
+        <li><code>sum by (pod) (...)</code> adds series up, keeping one value per pod label.</li>
+        <li><code>container_cpu_usage_seconds_total</code> and <code>container_memory_working_set_bytes</code> come from the kubelet's cAdvisor and describe each container. The working set is the number the OOM killer cares about (chapter 13).</li>
+        <li><code>kube_pod_container_status_restarts_total</code> and <code>kube_deployment_status_replicas_available</code> come from <strong>kube-state-metrics</strong>, a small service that turns the state of Kubernetes objects into metrics.</li>
+      </ul>
+
+      <h3>Prometheus on Kubernetes: the operator</h3>
+      <p>You rarely install Prometheus by hand. The <code>kube-prometheus-stack</code> Helm chart installs the <strong>Prometheus Operator</strong> (chapter 19), Prometheus, Alertmanager, Grafana, node-exporter (node-level metrics) and kube-state-metrics together, with dashboards ready. The operator gives you new kinds of object, so "monitor this app" is a manifest:</p>
+      <div class="code" data-lang="yaml" data-file="web-servicemonitor.yaml"><pre><code>
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: web
+  labels:
+    release: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: web
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+kind: ServiceMonitor        a CRD from the Prometheus Operator
+labels: release: monitoring the label Prometheus uses to find this ServiceMonitor (must match your Helm release name!)
+selector: app=web           which Services to scrape (chapter 8's labels again)
+endpoints: port http        the NAMED port on the Service
+  path: /metrics            where the metrics page is
+  interval: 30s             how often
+</code></pre></div>
+      <p>An alert is a manifest too:</p>
+      <div class="code" data-lang="yaml" data-file="web-alert.yaml"><pre><code>
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: web-alerts
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: web
+      rules:
+        - alert: WebPodRestarting
+          expr: increase(kube_pod_container_status_restarts_total{namespace="dev"}[15m]) &gt; 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pod }} restarted more than 3 times in 15 minutes"
+</code></pre></div>
+      <p><code>for: 5m</code> means the condition must hold for five minutes before the alert fires. It stops one blip from paging someone.</p>
+
+      <h3>What to watch</h3>
+      <p>You cannot alert on everything. A short list that works for most services is the <strong>four golden signals</strong>:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Signal</th><th>Question</th><th>Example</th></tr></thead>
+        <tbody>
+          <tr><td>Latency</td><td>How long do requests take?</td><td>95th percentile response time</td></tr>
+          <tr><td>Traffic</td><td>How much demand is there?</td><td>requests per second</td></tr>
+          <tr><td>Errors</td><td>How many requests fail?</td><td>share of 5xx responses</td></tr>
+          <tr><td>Saturation</td><td>How full is it?</td><td>CPU against requests, memory against limit, disk fullness</td></tr>
+        </tbody>
+      </table></div>
+      <p>Alert on what <strong>users feel</strong> (errors, latency) rather than on every internal number. An alert should mean "a human needs to act now".</p>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li><strong><code>kubectl logs -f</code> is <code>tail -f</code></strong> and <code>journalctl -u … -f</code>. The log files on the node under <code>/var/log</code> are the same <code>/var/log</code> from the filesystem chapter: "if something goes wrong with a server, <code>/var/log</code> is often one of the first places you look".</li>
+        <li><strong>Log rotation</strong> is <code>logrotate</code>'s job on a normal server. The kubelet does it for container logs, and that is why old lines vanish.</li>
+        <li><strong><code>kubectl top</code> is <code>top</code>.</strong> Same question, "what is eating my CPU or RAM right now?", for the whole cluster. <code>htop</code> on a node shows the same processes.</li>
+        <li><strong>Prometheus <code>node-exporter</code> reads <code>/proc</code>.</strong> The handbook said <code>/proc</code> is "a window the kernel provides so user programs can read live system state". Almost every system metric (CPU, memory, disk, network) comes from there or from cgroup files.</li>
+        <li><strong>A log-shipping agent on every node</strong> is a DaemonSet, the "install on every server" idea from chapter 14.</li>
+        <li><strong>An alert is a <code>cron</code> job that never sleeps</strong>: evaluate a rule every few seconds and tell someone if it is true.</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Relying on <code>kubectl logs</code> for history.</strong> Pod gone, logs gone. Ship them off the node.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Logging to a file inside the container.</strong> Nothing collects it, and it grows the container's layer. Log to stdout.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"<code>kubectl top</code> says <code>Metrics API not available</code>, so the cluster is broken."</strong> metrics-server is not installed. It is a separate add-on.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Using metrics-server as a monitoring system.</strong> It keeps no history and cannot alert. It is for <code>top</code> and autoscaling.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>A ServiceMonitor that Prometheus ignores.</strong> The usual causes: the <code>release</code> label does not match the Helm release name, the selector does not match the Service's labels, or <code>port</code> names a number instead of the Service port's <em>name</em>. Check the Prometheus UI under Targets.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Graphing a raw counter.</strong> It only goes up and resets on restart. Take its <code>rate()</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Alerting on everything.</strong> If people ignore alerts, they ignore the real one. Alert on symptoms users feel, and keep a short list.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>High-cardinality labels.</strong> A label such as user ID or full URL creates a new series for every value and can overload Prometheus. Keep label values to small, bounded sets.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p>Never log secrets, tokens or personal data. Logs are copied to central stores that more people can read than the Secret itself. Also, <code>kube-prometheus-stack</code> is large: it can need several gigabytes of memory, and a small laptop cluster may be unable to schedule it.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>Part A needs only your kind cluster. Part B adds metrics-server. Part C installs the full Prometheus stack and is <strong>heavy</strong>: give Docker Desktop several gigabytes of memory, or skip it and read the PromQL queries above instead.</p>
+      </div>
+
+      <h3>Part A: logs and events</h3>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl create namespace dev
+kubectl run chatty -n dev --image=busybox:1.37 -- sh -c 'i=0; while true; do echo "line $i"; i=$((i+1)); sleep 1; done'
+kubectl wait -n dev --for=condition=Ready pod/chatty --timeout=60s
+kubectl logs -n dev chatty --tail=5 --timestamps
+kubectl logs -n dev chatty --since=10s
+kubectl logs -n dev chatty -f                 # Ctrl+C to stop
+
+# where the file really is: find the node, then look inside it
+kubectl get pod chatty -n dev -o wide
+docker exec handbook-worker ls /var/log/pods            # use the node name from the line above
+docker exec handbook-worker ls /var/log/containers | grep chatty
+
+kubectl delete pod chatty -n dev
+kubectl logs -n dev chatty                              # gone: the logs went with the Pod
+</code></pre></div>
+
+      <h3>Part B: metrics-server and <code>kubectl top</code></h3>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl top nodes                              # probably: Metrics API not available
+helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+helm repo update
+helm upgrade --install metrics-server metrics-server/metrics-server -n kube-system --set 'args={--kubelet-insecure-tls}'
+kubectl rollout status deployment/metrics-server -n kube-system
+kubectl top nodes
+kubectl top pods -A
+</code></pre></div>
+      <p><code>--kubelet-insecure-tls</code> is a lab shortcut for kind, whose kubelets use self-signed certificates. Do not use it in production. Give metrics-server a minute to take its first samples before <code>top</code> returns numbers.</p>
+
+      <h3>Part C: Prometheus and Grafana (heavy)</h3>
+      <div class="code" data-lang="bash"><pre><code>
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+helm install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace
+kubectl get pods -n monitoring --watch          # wait until they are Running
+
+# Prometheus UI
+kubectl port-forward -n monitoring svc/monitoring-kube-prometheus-prometheus 9090:9090
+# open http://localhost:9090 and run:  up
+# Status, then Targets shows everything it scrapes
+
+# Grafana: the password is in a Secret (chapter 11: base64, not encryption)
+kubectl get secret -n monitoring monitoring-grafana -o jsonpath='{.data.admin-password}' | base64 -d
+kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
+# open http://localhost:3000, user admin; browse the ready-made dashboards
+
+# clean up
+helm uninstall monitoring -n monitoring
+kubectl delete namespace monitoring dev
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>Part A: the node's <code>/var/log/pods</code> holds a folder per Pod, and <code>/var/log/containers</code> has a link named after your Pod. After the Pod is deleted, <code>kubectl logs</code> has nothing. That is the reason to ship logs.</li>
+        <li>Part B: <code>top</code> first complains, then shows CPU and memory per node and Pod. It is the same idea as Linux <code>top</code>.</li>
+        <li>Part C: in the Prometheus UI, <code>up</code> lists every target with a value of <code>1</code> (alive) or <code>0</code>. Try <code>rate(container_cpu_usage_seconds_total[5m])</code>. In Grafana, open a dashboard called something like "Kubernetes / Compute Resources / Namespace (Pods)".</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>Where do container logs go, and why isn't <code>kubectl logs</code> enough?</summary>
+          <div class="answer">
+            <p>The app writes to stdout and stderr, the runtime captures that into files on the node under <code>/var/log/pods</code>, and <code>kubectl logs</code> reads them through the kubelet. They're rotated by size, and they disappear when the Pod is deleted or the node is lost. So for real use I run a log agent on every node, a DaemonSet like Fluent Bit or Vector, that ships logs to a central store such as Loki or Elasticsearch, where I can search across Pods and over time.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What's the difference between metrics-server and Prometheus?</summary>
+          <div class="answer">
+            <p>metrics-server serves only the current CPU and memory for Pods and nodes, with no history. It powers <code>kubectl top</code> and the HorizontalPodAutoscaler. Prometheus is a full monitoring system: it scrapes any metrics, stores them as time series, and supports queries with PromQL, dashboards and alerting. I'd install both: metrics-server for autoscaling and quick checks, Prometheus for monitoring and investigation.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How does Prometheus find what to monitor in Kubernetes?</summary>
+          <div class="answer">
+            <p>It pulls. Apps expose a metrics endpoint, and Prometheus scrapes it. In Kubernetes it discovers targets through the API, and with the Prometheus Operator I describe targets as objects: a ServiceMonitor selects Services by label and names the port and path to scrape. The operator turns those into Prometheus's configuration. When a target is missing, I check that the ServiceMonitor's labels match what Prometheus selects, and that the selector and port name match the Service.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What would you monitor and alert on for a web service?</summary>
+          <div class="answer">
+            <p>The four golden signals: latency, traffic, errors and saturation. I'd alert on what users feel, such as error rate and high latency percentiles, and on saturation that predicts trouble, like memory near its limit or a disk filling. I'd add Kubernetes-level signals such as frequent restarts and unavailable replicas. Alerts should be few and actionable, with a duration so a blip doesn't page anyone.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Why do you use <code>rate()</code> on counters?</summary>
+          <div class="answer">
+            <p>A counter only ever increases and resets to zero when the process restarts, so the raw value is not useful on a graph. <code>rate()</code> over a window like five minutes gives the per-second increase, and it handles resets properly. So "requests per second" is <code>rate(http_requests_total[5m])</code>, and an error ratio is the rate of errors divided by the rate of all requests.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Log</strong> to stdout, in JSON, with no secrets. <strong>Ship</strong> logs off the node. <strong>Install</strong> metrics-server for <code>top</code> and autoscaling, Prometheus for history. <strong>Take</strong> the <code>rate()</code> of counters. <strong>Watch</strong> latency, traffic, errors and saturation. <strong>Alert</strong> on what users feel, and keep the list short. And remember that events fade after an hour: write down what you learn.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
