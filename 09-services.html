@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Services and cluster DNS · Kubernetes Handbook</title>
+<meta name="description" content="Pods come and go, and every new Pod gets a new IP. So how does one app find another? A Service is the answer: a stable name and address in front of a changing set of Pods. This chapter shows how it wo">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="9">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Services and cluster DNS</h1>
+            <p class="sub">A stable address in front of changing Pods</p>
+          </div>
+          <span class="pill">Section 09</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">Pods come and go, and every new Pod gets a new IP. So how does one app find another? A Service is the answer: a stable name and address in front of a changing set of Pods. This chapter shows how it works, how to look inside it, and how to find out why it is empty.</p>
+
+      <h2>The problem</h2>
+      <p>You have a Deployment with three <code>web</code> Pods. Each has its own IP. A new app, <code>frontend</code>, needs to call them.</p>
+      <p>You cannot hardcode a Pod IP. Chapter 7 showed that Pods are replaced all the time, and a replacement has a different IP. You also do not want <code>frontend</code> to keep a list of three addresses and pick one. That list would change every few minutes.</p>
+      <p>You want one name that always works, and something behind it that knows who is alive right now.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>A Service gives a set of Pods one stable virtual IP and one DNS name. It finds its Pods by <strong>label</strong>, and it only sends traffic to Pods that are <strong>ready</strong>.</p>
+      </div>
+
+      <div class="cards">
+        <div class="card"><span class="tag">Think of it as</span><p>A company's main phone number. Callers dial one number. Whoever is on shift picks up. People change shifts, the number stays.</p></div>
+        <div class="card"><span class="tag">Stable</span><p>The Service IP and name do not change for the life of the Service, however many Pods come and go behind it.</p></div>
+        <div class="card"><span class="tag">Label based</span><p>The Service does not list Pods by name. It says "any Pod with <code>app: web</code>", and the cluster keeps the list up to date.</p></div>
+        <div class="card"><span class="tag">Not a process</span><p>There is no program listening on a Service IP. It is a rule on each node that rewrites the address to a real Pod.</p></div>
+      </div>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 760 360" role="img" aria-labelledby="s9-t s9-d">
+          <title id="s9-t">A Service in front of three Pods</title>
+          <desc id="s9-d">A client Pod calls the Service name web. The Service has a virtual IP and sends traffic to three Pods with the label app web. A fourth Pod with a different label is not selected.</desc>
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/>
+            </marker>
+          </defs>
+
+          <rect class="box-ext" x="14" y="130" width="130" height="80" rx="10"/>
+          <text class="t t-b" x="79" y="162" text-anchor="middle">client Pod</text>
+          <text class="t-mono" x="79" y="184" text-anchor="middle">curl http://web</text>
+
+          <rect class="box-svc" x="224" y="100" width="210" height="140" rx="12"/>
+          <text class="t t-b" x="329" y="132" text-anchor="middle">Service web</text>
+          <text class="t-mono" x="329" y="156" text-anchor="middle">10.96.x.x : 80</text>
+          <text class="t-sm" x="329" y="180" text-anchor="middle">DNS: web.dev.svc.cluster.local</text>
+          <text class="t-sm" x="329" y="206" text-anchor="middle">selector: app=web</text>
+          <text class="t-sm" x="329" y="224" text-anchor="middle">(only ready Pods)</text>
+
+          <rect class="box-pod-solid" x="552" y="24" width="190" height="64" rx="10"/>
+          <text class="t t-b" x="647" y="52" text-anchor="middle">Pod web-aaa</text>
+          <text class="t-sm" x="647" y="72" text-anchor="middle">app=web · 10.244.1.4</text>
+
+          <rect class="box-pod-solid" x="552" y="112" width="190" height="64" rx="10"/>
+          <text class="t t-b" x="647" y="140" text-anchor="middle">Pod web-bbb</text>
+          <text class="t-sm" x="647" y="160" text-anchor="middle">app=web · 10.244.2.7</text>
+
+          <rect class="box-pod-solid" x="552" y="200" width="190" height="64" rx="10"/>
+          <text class="t t-b" x="647" y="228" text-anchor="middle">Pod web-ccc</text>
+          <text class="t-sm" x="647" y="248" text-anchor="middle">app=web · 10.244.2.9</text>
+
+          <rect x="552" y="288" width="190" height="56" rx="10" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="5 4"/>
+          <text class="t-sm" x="647" y="312" text-anchor="middle">Pod db-xyz · app=db</text>
+          <text class="t-sm" x="647" y="330" text-anchor="middle">not selected, gets nothing</text>
+
+          <line class="arrow" x1="146" y1="170" x2="222" y2="170"/>
+          <line class="arrow" x1="436" y1="150" x2="550" y2="62"/>
+          <line class="arrow" x1="436" y1="170" x2="550" y2="144"/>
+          <line class="arrow" x1="436" y1="190" x2="550" y2="228"/>
+        </svg>
+        <figcaption>The client only knows the Service name. The cluster picks one ready Pod for each new connection.</figcaption>
+      </figure>
+
+      <h2>Your first Service</h2>
+      <p>This Service goes in front of the <code>web</code> Deployment from chapter 7:</p>
+
+      <div class="code" data-lang="yaml" data-file="web-svc.yaml"><pre><code>
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+spec:
+  selector:
+    app: web
+  ports:
+    - port: 80
+      targetPort: 80
+</code></pre></div>
+
+      <div class="code" data-lang="tree"><pre><code>
+spec:
+  selector:
+    app: web         which Pods: any with this label (same label as the Deployment's Pods)
+  ports:
+    - port: 80       the port the SERVICE listens on
+      targetPort: 80 the port on the POD it forwards to
+</code></pre></div>
+
+      <p><code>port</code> and <code>targetPort</code> are the two people mix up. Think of a hotel: <code>port</code> is the number guests dial at reception, <code>targetPort</code> is the room the call is put through to. They can differ. A Service on port 80 can forward to a Pod listening on 8080:</p>
+      <div class="code" data-lang="yaml"><pre><code>
+ports:
+  - port: 80
+    targetPort: 8080
+</code></pre></div>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl apply -f web-svc.yaml
+kubectl get service web
+kubectl describe service web
+kubectl get endpointslices -l kubernetes.io/service-name=web
+</code></pre></div>
+      <ul>
+        <li><code>get service</code> shows the <code>CLUSTER-IP</code> (the virtual address) and ports.</li>
+        <li><code>describe service</code> has an <code>Endpoints:</code> line listing the Pod IPs currently behind it. If that line is empty, nothing works. More on that below.</li>
+        <li><code>get endpointslices</code> shows the same list from the object that actually stores it. (The older <code>Endpoints</code> object is deprecated since Kubernetes 1.33. <code>kubectl get endpoints</code> still works, but EndpointSlices are the real thing.)</li>
+      </ul>
+
+      <h2>How it works</h2>
+      <p>Two pieces, both automatic:</p>
+      <ol>
+        <li><strong>The list.</strong> A controller watches Pods. For each Service it keeps an <strong>EndpointSlice</strong>: the IPs of Pods that match the selector <em>and are ready</em>. A Pod that fails its readiness probe is removed from the list. When it recovers, it comes back.</li>
+        <li><strong>The rules.</strong> On every node, <code>kube-proxy</code> (or the network plugin, if it replaces kube-proxy) turns that list into kernel rules: "traffic to <code>10.96.x.x:80</code> goes to one of these Pod IPs". On Linux those are iptables, IPVS or nftables rules.</li>
+      </ol>
+      <div class="flow"><span>Pod calls web:80</span><i>→</i><span>node rule matches the Service IP</span><i>→</i><span>rewritten to one ready Pod IP</span><i>→</i><span>Pod answers</span></div>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>The balancing happens <strong>per connection, on the client's node</strong>. It is not a proxy sitting in the middle. That has a famous side effect: a client that opens one long-lived connection (gRPC, HTTP/2, a database pool) sticks to a single Pod, and the other Pods get nothing.</p>
+      </div>
+
+      <h2>Service types</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Type</th><th>Reachable from</th><th>What it adds</th><th>Use it for</th></tr></thead>
+        <tbody>
+          <tr><td><code>ClusterIP</code> (default)</td><td>inside the cluster</td><td>a virtual IP and DNS name</td><td>almost everything: app to app</td></tr>
+          <tr><td><code>NodePort</code></td><td>outside, via <code>nodeIP:port</code></td><td>opens the same port (30000-32767 by default) on every node</td><td>quick tests, or as a building block</td></tr>
+          <tr><td><code>LoadBalancer</code></td><td>outside, via a cloud address</td><td>asks the cloud for a load balancer pointing at the nodes</td><td>exposing one Service to the internet</td></tr>
+          <tr><td><code>ExternalName</code></td><td>inside</td><td>a DNS alias (CNAME) to an outside name, no proxying</td><td>giving a stable name to an external database</td></tr>
+          <tr><td>Headless (<code>clusterIP: None</code>)</td><td>inside</td><td>no virtual IP; DNS returns the Pod IPs directly</td><td>StatefulSets, clients that pick their own Pod (chapter 14)</td></tr>
+        </tbody>
+      </table></div>
+
+      <p>The types build on each other: a <code>LoadBalancer</code> also gets a NodePort, and a NodePort also gets a ClusterIP.</p>
+      <div class="code" data-lang="yaml"><pre><code>
+spec:
+  type: NodePort
+  selector:
+    app: web
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30080
+</code></pre></div>
+      <p>Skip <code>nodePort</code> and the cluster picks one for you. Pinning it is only useful for demos.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>A <code>LoadBalancer</code> Service only gets an address if something provides load balancers: a cloud, MetalLB on bare metal, or <code>cloud-provider-kind</code> on kind. Without one, <code>EXTERNAL-IP</code> stays <code>&lt;pending&gt;</code> forever. Nothing is broken. Nothing is answering the request.</p>
+      </div>
+
+      <h2>Cluster DNS</h2>
+      <p>You do not type the Service IP. You type the name. The cluster runs a DNS server (<strong>CoreDNS</strong>) and every Pod is pointed at it. A Service named <code>web</code> in namespace <code>dev</code> gets this name:</p>
+      <div class="code" data-lang="tree"><pre><code>
+web . dev . svc . cluster.local
+│     │     │     │
+│     │     │     └─ the cluster's domain (default)
+│     │     └─────── "this is a Service"
+│     └───────────── namespace
+└─────────────────── Service name
+</code></pre></div>
+
+      <p>Three ways to call the same Service, from a Pod:</p>
+      <div class="code" data-lang="bash"><pre><code>
+curl http://web
+curl http://web.dev
+curl http://web.dev.svc.cluster.local
+</code></pre></div>
+      <ul>
+        <li>Plain <code>web</code> works <strong>only from the same namespace</strong>.</li>
+        <li><code>web.dev</code> works from any namespace.</li>
+        <li>The full name always works. Use it in config that crosses namespaces.</li>
+      </ul>
+
+      <p>Why does the short name work? Look at the resolver file inside any Pod. This is the file from the Linux handbook's filesystem chapter:</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl exec -n dev deploy/web -- cat /etc/resolv.conf
+</code></pre></div>
+      <p>It lists the cluster DNS server as <code>nameserver</code>, plus a <code>search</code> line with <code>dev.svc.cluster.local svc.cluster.local cluster.local</code> and <code>options ndots:5</code>. The <code>search</code> line is a list of suffixes the resolver tries in turn. You typed <code>web</code>, so it tries <code>web.dev.svc.cluster.local</code> first, and that matches. It is the same trick as <code>PATH</code>: you type the short name, the system tries a list of places.</p>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li>A Service is a small version of what <strong>nginx as a reverse proxy</strong> did in the Linux handbook: one address, many backends. The difference is that the "config" is rebuilt automatically from labels, and it is kernel rules, not a program.</li>
+        <li><code>kube-proxy</code> writes <strong>iptables</strong> (or IPVS or nftables) rules. On a node you can see them: <code>sudo iptables -t nat -L KUBE-SERVICES</code> on a cluster that uses iptables mode. Kubernetes is configuring the Linux kernel's own packet rewriting.</li>
+        <li><code>/etc/resolv.conf</code> and its <code>search</code> line are plain Linux DNS. Tools you know, <code>nslookup</code> and <code>dig</code>, work inside Pods that have them.</li>
+        <li>Cluster DNS names behave like entries in <code>/etc/hosts</code> that you never edit.</li>
+      </ul>
+
+      <h2>When a Service does not work</h2>
+      <p>Nine times in ten, the Service has <strong>no endpoints</strong>. Check in this order:</p>
+      <ol>
+        <li><code>kubectl get endpointslices -l kubernetes.io/service-name=web</code>. Empty <code>ENDPOINTS</code> means no Pod is selected and ready.</li>
+        <li><code>kubectl get pods --show-labels</code>. Do the Pods carry exactly the labels in the Service <code>selector</code>? A typo (<code>app: wbe</code>) is the usual cause.</li>
+        <li><code>kubectl get pods</code>. Are the Pods <code>READY 1/1</code>? A Pod failing its readiness probe is removed from the list on purpose.</li>
+        <li>Is <code>targetPort</code> the port the app really listens on? <code>kubectl exec</code> in and check.</li>
+        <li>Is the call from the right namespace, or using the full name?</li>
+      </ol>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Selector does not match the Pod labels.</strong> The Service creates fine and silently selects nothing. This is the number one Service bug. Compare the Service <code>selector</code> against the labels on the Pods, not the labels on the Deployment.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Mixing up <code>port</code> and <code>targetPort</code>.</strong> <code>port</code> is what clients use on the Service. <code>targetPort</code> is where the Pod listens. If they differ and you set only <code>port</code>, the traffic goes to the wrong place.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"I'll ping the Service IP."</strong> It will not answer. The IP is virtual, and only the ports you listed are forwarded. Test with <code>curl</code> or <code>nc</code> to the port, not <code>ping</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Calling the short name across namespaces.</strong> <code>curl http://web</code> from namespace <code>prod</code> looks for <code>web.prod</code>. Use <code>web.dev</code> or the full name.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"A Service balances requests evenly."</strong> It balances <em>connections</em>, and without any guarantee of fairness. Long-lived connections pin to one Pod. For gRPC you need client-side balancing, a headless Service, or a proxy that understands the protocol.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Using NodePort as your production entry point.</strong> It exposes a high port on every node and has no names, no TLS, no routing. Put an Ingress or Gateway in front (next chapter), or a LoadBalancer.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p>A <code>type: LoadBalancer</code> Service on a real cloud <strong>creates a billable load balancer with a public address</strong>. Deleting the Service deletes it. Forgetting one costs money, and exposing an internal app by accident is a security incident.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>On the kind cluster from chapter 4. This lab uses the Deployment from chapter 7 and the Service from this chapter, in a scratch namespace.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+# 1. set up
+kubectl create namespace dev
+kubectl apply -n dev -f web-deploy.yaml
+kubectl apply -n dev -f web-svc.yaml
+kubectl rollout status deployment/web -n dev
+
+# 2. look at the Service and what is behind it
+kubectl get service web -n dev
+kubectl describe service web -n dev
+kubectl get endpointslices -n dev -l kubernetes.io/service-name=web
+kubectl get pods -n dev -o wide
+
+# 3. call it by name from inside the cluster
+kubectl run tmp -n dev --rm -it --restart=Never --image=curlimages/curl -- curl -s http://web
+kubectl run tmp -n dev --rm -it --restart=Never --image=curlimages/curl -- curl -s http://web.dev.svc.cluster.local
+
+# 4. call it from your laptop
+kubectl port-forward -n dev service/web 8080:80
+# second terminal: curl -I localhost:8080
+
+# 5. watch the list follow the Pods
+kubectl get endpointslices -n dev -l kubernetes.io/service-name=web --watch
+# second terminal:
+kubectl scale deployment web -n dev --replicas=5
+kubectl scale deployment web -n dev --replicas=1
+
+# 6. break the selector on purpose
+kubectl patch service web -n dev -p '{"spec":{"selector":{"app":"wbe"}}}'
+kubectl describe service web -n dev
+kubectl run tmp -n dev --rm -it --restart=Never --image=curlimages/curl -- curl -s -m 3 http://web
+# fix it again
+kubectl patch service web -n dev -p '{"spec":{"selector":{"app":"web"}}}'
+
+# 7. clean up
+kubectl delete namespace dev
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>Step 2: the Pod IPs in <code>get pods -o wide</code> are the same ones in the EndpointSlice and in the <code>Endpoints:</code> line of <code>describe</code>.</li>
+        <li>Step 3: the nginx welcome page, from a name, not an IP.</li>
+        <li>Step 5: addresses appear and disappear as the replica count changes. The Service IP never changes.</li>
+        <li>Step 6: <code>Endpoints:</code> becomes <code>&lt;none&gt;</code> and the <code>curl</code> times out. Same Service, same Pods, one typo. That is the failure you will see most in real life.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>Why do we need Services when Pods have IPs?</summary>
+          <div class="answer">
+            <p>Because Pod IPs aren't stable. Pods are replaced all the time, and each replacement gets a new IP. A Service gives a set of Pods one virtual IP and one DNS name that don't change. It selects Pods by label and only sends traffic to ready ones, so clients don't need to know which Pods exist right now.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How does a Service actually route traffic?</summary>
+          <div class="answer">
+            <p>A controller keeps EndpointSlices, which are the IPs of ready Pods matching the selector. On every node, kube-proxy, or the CNI if it replaces kube-proxy, turns that into kernel rules: iptables, IPVS or nftables. When a Pod connects to the Service IP, the rule on its own node rewrites the destination to one of the Pod IPs. There's no process in the middle. It also means balancing is per connection.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What's the difference between ClusterIP, NodePort and LoadBalancer?</summary>
+          <div class="answer">
+            <p>ClusterIP is the default: a virtual IP reachable only inside the cluster. NodePort adds a port, 30000 to 32767 by default, opened on every node, so you can reach it from outside by node IP. LoadBalancer builds on NodePort and asks the cloud to create an external load balancer pointing at the nodes. Each includes the one before it. For HTTP traffic I'd normally put an Ingress or Gateway in front of ClusterIP Services instead of one LoadBalancer per app.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>A Service has no endpoints. How do you debug it?</summary>
+          <div class="answer">
+            <p>I check the EndpointSlice first. If it's empty, I compare the Service selector with the labels on the Pods, because a typo there is the most common cause. Then I check the Pods are actually Ready, since a failing readiness probe removes them on purpose. Then I check <code>targetPort</code> matches the port the app listens on, and that I'm calling from the right namespace.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How does DNS work for Services?</summary>
+          <div class="answer">
+            <p>CoreDNS runs in the cluster and every Pod's <code>resolv.conf</code> points at it. A Service gets the name <code>name.namespace.svc.cluster.local</code>. Inside the same namespace the short name works because of the <code>search</code> line in <code>resolv.conf</code>. From another namespace I use <code>name.namespace</code> or the full name. A headless Service returns the Pod IPs directly instead of one virtual IP.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Talk</strong> to Services by name, never by Pod IP. <strong>Check</strong> the EndpointSlice first when a Service misbehaves. <strong>Match</strong> the selector to the Pod labels exactly. <strong>Use</strong> <code>curl</code>, not <code>ping</code>, to test. <strong>Keep</strong> NodePort for demos, and put real traffic through Ingress or Gateway. And remember that a Service balances connections, not requests.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

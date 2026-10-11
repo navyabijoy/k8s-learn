@@ -14,7 +14,7 @@
     { n: 6,  file: "06-pods.html",             title: "Pods", ready: true },
     { n: 7,  file: "07-deployments.html",      title: "Deployments, ReplicaSets, rollouts", ready: true },
     { n: 8,  file: "08-labels-namespaces.html",title: "Labels, selectors and namespaces" },
-    { n: 9,  file: "09-services.html",         title: "Services and cluster DNS" },
+    { n: 9,  file: "09-services.html",         title: "Services and cluster DNS", ready: true },
     { n: 10, file: "10-ingress.html",          title: "Ingress" },
     { n: 11, file: "11-config-secrets.html",   title: "ConfigMaps and Secrets" },
     { n: 12, file: "12-storage.html",          title: "Storage: volumes, PV, PVC" },
