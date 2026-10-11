@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StatefulSets, DaemonSets, Jobs, CronJobs · Kubernetes Handbook</title>
+<meta name="description" content="A Deployment treats every Pod as interchangeable. That is exactly wrong for a database, a node agent, a nightly backup. Kubernetes has a controller for each of those jobs. This chapter is a guided tou">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="14">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>StatefulSets, DaemonSets, Jobs, CronJobs</h1>
+            <p class="sub">The other ways to run Pods</p>
+          </div>
+          <span class="pill">Section 14</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">A Deployment treats every Pod as interchangeable. That is exactly wrong for a database, a node agent, a nightly backup. Kubernetes has a controller for each of those jobs. This chapter is a guided tour of four: StatefulSets, DaemonSets, Jobs and CronJobs, and a rule for picking between them.</p>
+
+      <h2>The problem</h2>
+      <p>The Deployment from chapter 7 assumes three things that are not always true.</p>
+      <ul>
+        <li><strong>Pods are identical and replaceable.</strong> A database replica is not. <code>db-0</code> is the primary and <code>db-1</code> is a follower, and each has its own disk.</li>
+        <li><strong>Pods go anywhere.</strong> A log collector must run on <em>every</em> node, exactly once.</li>
+        <li><strong>Pods run forever.</strong> A backup runs, finishes, and should <em>not</em> be restarted.</li>
+      </ul>
+      <p>One controller cannot do all four, so there are four.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>Choose the controller by asking: <strong>Is each Pod special? Must there be one per node? Does it finish? Does it repeat on a schedule?</strong></p>
+      </div>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th>You want…</th><th>Use</th><th>Linux cousin</th></tr></thead>
+        <tbody>
+          <tr><td>N identical, replaceable copies, forever</td><td><strong>Deployment</strong> (chapter 7)</td><td><code>systemd</code> service, many copies</td></tr>
+          <tr><td>N copies with stable names and their own disks</td><td><strong>StatefulSet</strong></td><td>named servers with fixed disks</td></tr>
+          <tr><td>exactly one copy on every node</td><td><strong>DaemonSet</strong></td><td>a package installed on every server</td></tr>
+          <tr><td>run once, to completion</td><td><strong>Job</strong></td><td>running a script by hand, with a retry</td></tr>
+          <tr><td>run on a schedule</td><td><strong>CronJob</strong></td><td><code>cron</code></td></tr>
+        </tbody>
+      </table></div>
+
+      <h2>StatefulSet</h2>
+      <div class="cards">
+        <div class="card"><span class="tag">Stable names</span><p>Pods are <code>web-0</code>, <code>web-1</code>, <code>web-2</code>, not random hashes. If <code>web-1</code> is replaced, the new one is called <code>web-1</code> again.</p></div>
+        <div class="card"><span class="tag">Stable storage</span><p>Each Pod gets its own PVC, created from a template. <code>web-1</code> always reattaches to <em>its</em> disk.</p></div>
+        <div class="card"><span class="tag">Stable DNS</span><p>Each Pod gets its own DNS name through a headless Service: <code>web-0.web</code>.</p></div>
+        <div class="card"><span class="tag">Ordered</span><p>Starts <code>web-0</code> first, waits until it is ready, then <code>web-1</code>. Stops in reverse order.</p></div>
+      </div>
+
+      <div class="code" data-lang="yaml" data-file="web-sts.yaml"><pre><code>
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+spec:
+  clusterIP: None
+  selector:
+    app: web
+  ports:
+    - port: 80
+      name: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: web
+spec:
+  serviceName: web
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27
+          ports:
+            - containerPort: 80
+              name: http
+          volumeMounts:
+            - name: www
+              mountPath: /usr/share/nginx/html
+  volumeClaimTemplates:
+    - metadata:
+        name: www
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+</code></pre></div>
+
+      <div class="code" data-lang="tree"><pre><code>
+Service web, clusterIP: None   a HEADLESS Service: no virtual IP, DNS returns the Pod IPs
+StatefulSet web
+  serviceName: web             the headless Service that gives the Pods their DNS names
+  replicas: 2                  creates web-0 then web-1
+  volumeClaimTemplates:        a PVC is made PER Pod from this template:
+    - name: www                  www-web-0, www-web-1
+</code></pre></div>
+
+      <p>Compare with the Deployment: the Pod template is the same. What is new is <code>serviceName</code> and <code>volumeClaimTemplates</code>.</p>
+
+      <h3>The DNS name</h3>
+      <div class="code" data-lang="tree"><pre><code>
+web-0 . web . dev . svc . cluster.local
+│       │     │
+│       │     └─ namespace
+│       └─────── the headless Service (serviceName)
+└─────────────── the Pod name
+</code></pre></div>
+      <p>An ordinary Service gives you one name for the group. A headless Service plus a StatefulSet also gives you one name <em>per Pod</em>. That is how a database follower can say "connect to <code>db-0</code>", whichever node it is on today.</p>
+
+      <h3>What a StatefulSet does not do</h3>
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>A StatefulSet gives each Pod an identity and a disk. It does <strong>not</strong> know how to set up replication, elect a primary, or take backups. Running a PostgreSQL cluster still needs that logic. That is what operators (chapter 19) add on top of a StatefulSet.</p>
+      </div>
+
+      <h3>Scaling and deleting</h3>
+      <ul>
+        <li><strong>Scaling up</strong> adds <code>web-2</code> after <code>web-1</code> is ready. <strong>Scaling down</strong> removes the highest number first.</li>
+        <li><strong>The PVCs stay.</strong> By default, scaling down or deleting a StatefulSet does <em>not</em> delete its PVCs. Newer versions have a <code>persistentVolumeClaimRetentionPolicy</code> field if you want that. The default is the safe one: data is not lost by accident.</li>
+        <li><strong>Updates</strong> are rolling, one Pod at a time, from the highest number down. A <code>partition</code> setting lets you update only some Pods first, as a canary.</li>
+      </ul>
+
+      <h2>DaemonSet</h2>
+      <p>A DaemonSet runs <strong>one Pod on every node</strong> (or every node matching a selector). Add a node and it gets one. Remove a node and that Pod is cleaned up. You do not set a replica count.</p>
+
+      <div class="code" data-lang="yaml" data-file="node-agent.yaml"><pre><code>
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-agent
+spec:
+  selector:
+    matchLabels:
+      app: node-agent
+  template:
+    metadata:
+      labels:
+        app: node-agent
+    spec:
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: agent
+          image: busybox:1.37
+          command: ["sh", "-c", "while true; do echo \"agent on $NODE_NAME\"; sleep 30; done"]
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+</code></pre></div>
+      <ul>
+        <li>There is no <code>replicas</code>. The number of Pods is the number of matching nodes.</li>
+        <li>The <code>tolerations</code> block lets it run on control-plane nodes, which are tainted by default (chapter 15). Without it, the agent would skip them.</li>
+        <li>The <code>fieldRef</code> hands the Pod its own node's name as an environment variable. This is the "downward API": a Pod reading facts about itself.</li>
+      </ul>
+      <p>Real DaemonSets you already have: the network plugin (chapter 17), <code>kube-proxy</code> on many clusters, and log and metrics collectors (chapter 21). Run <code>kubectl get daemonset -A</code> on any cluster to see them.</p>
+
+      <h2>Job</h2>
+      <p>A Job runs Pods <strong>until they succeed</strong>, then stops. A Deployment would restart a finished container forever. A Job treats "exit 0" as the goal.</p>
+      <div class="code" data-lang="yaml" data-file="backup-job.yaml"><pre><code>
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: backup
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: backup
+          image: busybox:1.37
+          command: ["sh", "-c", "echo backing up; sleep 5; echo done"]
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+backoffLimit: 3             retry a failing Pod up to 3 times before giving up (default is 6)
+ttlSecondsAfterFinished: 300 delete the Job and its Pods 5 minutes after it finishes
+restartPolicy: Never        REQUIRED to be Never or OnFailure. Always is not allowed in a Job.
+(completions: 1)            how many successful Pods are needed (default 1)
+(parallelism: 1)            how many to run at once (default 1)
+(activeDeadlineSeconds:)    kill the whole Job if it runs longer than this
+</code></pre></div>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl apply -f backup-job.yaml
+kubectl get job backup
+kubectl logs job/backup
+kubectl get pods -l job-name=backup
+</code></pre></div>
+      <ul>
+        <li><code>COMPLETIONS 1/1</code> in <code>get job</code> means done.</li>
+        <li><code>logs job/backup</code> reads the Job's Pod. Add <code>-f</code> to follow.</li>
+        <li>Finished Pods stay as <code>Completed</code> so you can read their logs, until the TTL deletes them. Without a TTL, they stay forever.</li>
+      </ul>
+      <p>Set <code>completions: 5</code> and <code>parallelism: 2</code> and the Job runs five tasks, two at a time. That is how you fan out a batch of work.</p>
+
+      <h2>CronJob</h2>
+      <p>A CronJob creates a <strong>Job on a schedule</strong>. The schedule is the same five fields as the Linux <code>crontab</code>: minute, hour, day of month, month, day of week.</p>
+
+      <div class="code" data-lang="yaml" data-file="hello-cron.yaml"><pre><code>
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: hello
+spec:
+  schedule: "*/1 * * * *"
+  timeZone: "Etc/UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 300
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: hello
+              image: busybox:1.37
+              command: ["sh", "-c", "date; echo hello from the cluster"]
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+schedule: "*/1 * * * *"       every minute. Same fields as crontab: min hour dom month dow
+timeZone: "Etc/UTC"           which time zone the schedule uses (leave out for the controller's default)
+concurrencyPolicy: Forbid     if the last run is still going, skip this one
+successfulJobsHistoryLimit: 3 keep the last 3 successful Jobs (the default)
+failedJobsHistoryLimit: 1     keep the last 1 failed Job (the default)
+jobTemplate:                  a normal Job spec: the thing to run each time
+</code></pre></div>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th><code>concurrencyPolicy</code></th><th>If the previous run is still going when the next is due</th></tr></thead>
+        <tbody>
+          <tr><td><code>Allow</code> (default)</td><td>start the new one anyway. Runs overlap.</td></tr>
+          <tr><td><code>Forbid</code></td><td>skip the new run.</td></tr>
+          <tr><td><code>Replace</code></td><td>stop the old run and start the new one.</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Cron versus CronJob</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th></th><th>Linux <code>cron</code></th><th>Kubernetes CronJob</th></tr></thead>
+        <tbody>
+          <tr><td>Runs on</td><td>one machine</td><td>any node in the cluster</td></tr>
+          <tr><td>If the machine is down</td><td>the run is lost</td><td>runs on another node</td></tr>
+          <tr><td>Output</td><td>mail, or a file you redirected (<code>&gt;&gt; cron.log 2&gt;&amp;1</code>)</td><td>the Pod's logs, kept for the last few runs</td></tr>
+          <tr><td>Environment</td><td>a minimal one (the <code>PATH</code> trap)</td><td>exactly what the container image and spec give it</td></tr>
+          <tr><td>Overlap control</td><td>none, you write a lock</td><td><code>concurrencyPolicy</code></td></tr>
+          <tr><td>Retries</td><td>none</td><td><code>backoffLimit</code></td></tr>
+        </tbody>
+      </table></div>
+
+      <p>One honest caveat from the Kubernetes docs: a CronJob can occasionally create a Job twice, or miss one. Write jobs so running twice is harmless (<strong>idempotent</strong>).</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get cronjob
+kubectl get jobs --watch
+kubectl create job manual-run --from=cronjob/hello
+kubectl patch cronjob hello -p '{"spec":{"suspend":true}}'
+</code></pre></div>
+      <ul>
+        <li><code>get jobs --watch</code> shows a new Job each minute.</li>
+        <li><code>create job --from=cronjob/hello</code> runs the CronJob's job once, right now. Good for testing a schedule you cannot wait for.</li>
+        <li><code>suspend: true</code> pauses it without deleting it.</li>
+      </ul>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li><strong>StatefulSet pods are named servers.</strong> In the Linux handbook, <code>harry</code> and <code>alice</code> each had their own <code>/home</code> directory that stayed theirs. <code>web-0</code> and <code>web-1</code> each have their own volume that stays theirs. A Deployment's Pods are more like anonymous workers sharing a pool.</li>
+        <li><strong>A DaemonSet is "install this on every server".</strong> Think of adding a monitoring package with <code>apt install</code> to each machine, except new machines get it automatically.</li>
+        <li><strong>A Job is a script you run to completion</strong> and check the exit code of: <code>0</code> is success, anything else is a failure to retry. <code>backoffLimit</code> is a retry loop.</li>
+        <li><strong>A CronJob is <code>cron</code>.</strong> The five fields are the ones from the Linux handbook: <code>*/5 * * * *</code> is every five minutes, <code>0 2 * * *</code> is 02:00 daily, <code>0 3 * * 0</code> is Sunday at 3 a.m. The handbook's warnings carry over: use absolute things, redirect or collect output, and do not assume the job ran because you added it.</li>
+        <li><strong>The time zone question</strong> is the same one the handbook raised: cron uses the server's zone. A CronJob without <code>timeZone</code> uses the controller's zone, so set it.</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Running a database as a Deployment.</strong> Its Pods have random names, share a claim, and can start in parallel. A StatefulSet, or better an operator built on one, is the right tool.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"A StatefulSet makes my database highly available."</strong> It gives identity and storage. Replication, failover and backups still need software that does it: the database's own clustering, or an operator.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>No headless Service for a StatefulSet.</strong> <code>serviceName</code> must name a Service that exists, with <code>clusterIP: None</code>, or the per-Pod DNS names do not work.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"I deleted the StatefulSet, so the data is gone."</strong> The PVCs are still there, on purpose. Delete them yourself when you are sure.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong><code>restartPolicy: Always</code> in a Job.</strong> It is rejected. A Job's Pods must use <code>Never</code> or <code>OnFailure</code>, because a finished container must stay finished.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Jobs piling up.</strong> Without <code>ttlSecondsAfterFinished</code>, finished Jobs and their Pods stay. A CronJob every minute leaves hundreds. Set the TTL, and the history limits on a CronJob.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Overlapping CronJob runs.</strong> A backup that takes longer than its interval starts a second copy by default (<code>Allow</code>). Use <code>Forbid</code> unless overlap is safe.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>A heavy DaemonSet.</strong> Whatever it requests, you pay on <em>every</em> node. Ten nodes means ten copies of that CPU and memory request.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p><code>kubectl delete job NAME</code> deletes its Pods and their logs, even a running backup in the middle of its work. And <code>--force --grace-period=0</code> on a StatefulSet Pod can leave two copies of the same Pod alive, both writing to one disk.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>Best on the three-node kind cluster from chapter 4, so the DaemonSet has several nodes to spread over. Use a scratch namespace.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl create namespace dev
+
+# ---- StatefulSet ----
+kubectl apply -n dev -f web-sts.yaml
+kubectl get pods -n dev --watch                  # web-0 first, then web-1 (Ctrl+C when both are Running)
+kubectl get pvc -n dev                           # www-web-0 and www-web-1
+kubectl exec -n dev web-0 -- sh -c 'echo "I am web-0" &gt; /usr/share/nginx/html/index.html'
+kubectl delete pod web-0 -n dev
+kubectl wait -n dev --for=condition=Ready pod/web-0 --timeout=90s
+kubectl exec -n dev web-0 -- cat /usr/share/nginx/html/index.html     # same name, same data
+kubectl run tmp -n dev --rm -it --restart=Never --image=curlimages/curl -- curl -s http://web-0.web
+kubectl scale statefulset web -n dev --replicas=0
+kubectl get pvc -n dev                           # still there
+
+# ---- DaemonSet ----
+kubectl apply -n dev -f node-agent.yaml
+kubectl get daemonset -n dev
+kubectl get pods -n dev -l app=node-agent -o wide    # one per node
+
+# ---- Job ----
+kubectl apply -n dev -f backup-job.yaml
+kubectl get job backup -n dev --watch
+kubectl logs -n dev job/backup
+
+# ---- CronJob ----
+kubectl apply -n dev -f hello-cron.yaml
+kubectl get jobs -n dev --watch                  # wait for two runs, then Ctrl+C
+kubectl patch cronjob hello -n dev -p '{"spec":{"suspend":true}}'
+kubectl create job -n dev manual-run --from=cronjob/hello
+
+# clean up (this also deletes the PVCs)
+kubectl delete namespace dev
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>StatefulSet: the order (<code>web-0</code> ready before <code>web-1</code> starts), the per-Pod PVCs, and the same name and same data after deleting <code>web-0</code>. The <code>curl</code> to <code>web-0.web</code> returns the text you wrote.</li>
+        <li>After scaling to 0, the PVCs remain. That is the "data is not lost by accident" default.</li>
+        <li>DaemonSet: the number of Pods equals the number of nodes, including the control-plane node because of the toleration.</li>
+        <li>Job: <code>1/1</code> completions, and the log shows <code>done</code>.</li>
+        <li>CronJob: a new Job about every minute, and no overlapping ones.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>When would you use a StatefulSet instead of a Deployment?</summary>
+          <div class="answer">
+            <p>When each replica needs a stable identity and its own storage: databases, message brokers, anything where Pod 0 is different from Pod 1. A StatefulSet gives stable names like <code>db-0</code>, a PVC per Pod from <code>volumeClaimTemplates</code> that reattaches to the same Pod, per-Pod DNS through a headless Service, and ordered startup and shutdown. A Deployment's Pods are interchangeable and share one template, which suits stateless apps. And a StatefulSet doesn't do replication or failover by itself. That needs the application's own clustering, or an operator.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What's a DaemonSet, and what's it used for?</summary>
+          <div class="answer">
+            <p>It runs exactly one Pod on every node, or every node matching a selector, and adds or removes Pods as nodes come and go. I use it for things that must run per node: log and metrics collectors, the CNI network plugin, kube-proxy, storage drivers, security agents. Control-plane nodes are tainted, so a DaemonSet needs a toleration if it should run there too.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What's the difference between a Job and a CronJob?</summary>
+          <div class="answer">
+            <p>A Job runs Pods to completion: it retries failures up to a backoff limit, and finishes when enough Pods succeed. A CronJob is a schedule that creates a Job at the right times, using the same five-field cron syntax as Linux. So I use a Job for one-off work like a migration, and a CronJob for repeating work like a nightly backup. Both need <code>restartPolicy</code> Never or OnFailure.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How do you stop CronJob runs from overlapping, and what else can go wrong?</summary>
+          <div class="answer">
+            <p>Set <code>concurrencyPolicy: Forbid</code> so a new run is skipped if the last is still going, or Replace to stop the old one. Other things to watch: set <code>timeZone</code> so the schedule is what I expect, set <code>ttlSecondsAfterFinished</code> and the history limits so finished Jobs don't pile up, and remember the docs say a run can occasionally happen twice or be missed, so jobs should be idempotent.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How does DNS work for StatefulSet Pods?</summary>
+          <div class="answer">
+            <p>The StatefulSet's <code>serviceName</code> points at a headless Service, one with <code>clusterIP: None</code>. Because it has no virtual IP, DNS returns the Pod IPs, and each Pod also gets its own record, <code>pod-name.service.namespace.svc.cluster.local</code>, for example <code>web-0.web.dev.svc.cluster.local</code>. The Pod name is stable across restarts, so other members can always find <code>web-0</code> even though its IP changes.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Ask</strong> the four questions before picking a controller. <strong>Never</strong> run a database as a plain Deployment. <strong>Remember</strong> a StatefulSet gives identity, not clustering. <strong>Set</strong> a TTL on Jobs and a <code>concurrencyPolicy</code> and <code>timeZone</code> on CronJobs. <strong>Make</strong> scheduled work idempotent. And budget a DaemonSet's cost times the number of nodes.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
