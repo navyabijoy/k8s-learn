@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RBAC and ServiceAccounts · Kubernetes Handbook</title>
+<meta name="description" content="Every request to the API server comes from someone: a person with kubectl, a CI job, or a Pod. The cluster must decide, for each one, whether it is allowed. That decision is RBAC. It is the same quest">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="16">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>RBAC and ServiceAccounts</h1>
+            <p class="sub">Who is allowed to do what</p>
+          </div>
+          <span class="pill">Section 16</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">Every request to the API server comes from someone: a person with <code>kubectl</code>, a CI job, or a Pod. The cluster must decide, for each one, whether it is allowed. That decision is RBAC. It is the same question the Linux handbook opened its permissions chapter with: <em>who is allowed to read, modify or execute what?</em></p>
+
+      <h2>The problem</h2>
+      <p>Imagine a cluster shared by three people. Harry runs it. Alice is a developer who deploys in <code>dev</code>. Bob is a developer who should only be able to look. Then add a Pod that needs to list other Pods, and a CI pipeline that deploys.</p>
+      <p>Without rules, everyone with a login can delete anything, read every Secret and shut the cluster down. You need to give each identity <strong>exactly</strong> the permissions its job needs, and nothing else.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p><strong>RBAC</strong> (Role-Based Access Control) is an allow-list. A <strong>Role</strong> lists permissions. A <strong>binding</strong> hands that Role to a person, group or ServiceAccount. If nothing allows it, it is denied. There are no "deny" rules.</p>
+      </div>
+
+      <div class="cards">
+        <div class="card"><span class="tag">Authentication</span><p>"Who are you?" Settled before RBAC: a certificate, a token, or a login through your identity provider.</p></div>
+        <div class="card"><span class="tag">Authorization</span><p>"What may you do?" This is RBAC. It looks at the identity, the verb, the resource and the namespace.</p></div>
+        <div class="card"><span class="tag">Role</span><p>A list of permissions, inside <em>one namespace</em>. Nothing happens until it is bound.</p></div>
+        <div class="card"><span class="tag">Binding</span><p>The link: "give this Role to alice". Without a binding, a Role is just a document.</p></div>
+      </div>
+
+      <div class="flow"><span>Subject <small>(alice, a group, a ServiceAccount)</small></span><i>→ RoleBinding →</i><span>Role <small>(verbs on resources)</small></span><i>→</i><span>allowed in that namespace</span></div>
+
+      <h2>The four objects</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Object</th><th>Scope</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>Role</code></td><td>one namespace</td><td>a set of permissions in that namespace</td></tr>
+          <tr><td><code>RoleBinding</code></td><td>one namespace</td><td>gives a Role (or a ClusterRole) to subjects, <em>in that namespace only</em></td></tr>
+          <tr><td><code>ClusterRole</code></td><td>whole cluster</td><td>permissions that may cover cluster-wide objects (Nodes, PersistentVolumes) or all namespaces</td></tr>
+          <tr><td><code>ClusterRoleBinding</code></td><td>whole cluster</td><td>gives a ClusterRole to subjects <em>everywhere</em></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>A Role</h3>
+      <div class="code" data-lang="yaml" data-file="pod-reader.yaml"><pre><code>
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+  namespace: dev
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+rules:
+  - apiGroups: [""]              which API group. "" is the core group: Pods, Services, ConfigMaps, Secrets.
+                                 Deployments are "apps"; Ingress is "networking.k8s.io".
+    resources: ["pods"]          which kinds of object (plural, lower case)
+    verbs: [get, list, watch]    which actions
+</code></pre></div>
+      <p>The verbs map straight onto HTTP: <code>get</code> (one), <code>list</code> (many), <code>watch</code> (stream changes), <code>create</code>, <code>update</code>, <code>patch</code>, <code>delete</code>. Find the group for any resource with <code>kubectl api-resources</code> (the <code>APIVERSION</code> column).</p>
+      <p>Two details people miss:</p>
+      <ul>
+        <li><strong>Sub-resources are separate.</strong> Reading logs is <code>pods/log</code>. Running <code>kubectl exec</code> is <code>pods/exec</code> (and is very powerful). Giving <code>pods</code> does not give those.</li>
+        <li><strong><code>kubectl get pods</code> needs <code>list</code>, not just <code>get</code></strong>, and <code>--watch</code> needs <code>watch</code>.</li>
+      </ul>
+
+      <h3>A binding</h3>
+      <div class="code" data-lang="yaml" data-file="alice-binding.yaml"><pre><code>
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: alice-pod-reader
+  namespace: dev
+subjects:
+  - kind: User
+    name: alice
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+subjects:                  WHO gets it. A list: User, Group or ServiceAccount.
+  - kind: User, name: alice
+roleRef:                   WHAT they get. One Role or ClusterRole. Cannot be changed later:
+  kind: Role                 to change it, delete and recreate the binding.
+  name: pod-reader
+</code></pre></div>
+      <p>The result: <code>alice</code> can <code>get</code>, <code>list</code> and <code>watch</code> Pods in <code>dev</code>. Nothing else, and nothing in other namespaces.</p>
+
+      <h3>The same thing, in one line each</h3>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl create role pod-reader --verb=get,list,watch --resource=pods -n dev
+kubectl create rolebinding alice-pod-reader --role=pod-reader --user=alice -n dev
+kubectl create clusterrolebinding ops-view --clusterrole=view --group=ops
+</code></pre></div>
+      <ul>
+        <li>The first two build the Role and binding above. Add <code>--dry-run=client -o yaml</code> to get the YAML.</li>
+        <li>The third gives the group <code>ops</code> the built-in <code>view</code> ClusterRole across the whole cluster.</li>
+      </ul>
+
+      <h3>A trick worth knowing: bind a ClusterRole in one namespace</h3>
+      <p>A <code>RoleBinding</code> may point at a <code>ClusterRole</code>. The permissions are then limited to the binding's namespace. It lets you define a role once and hand it out per namespace:</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl create rolebinding bob-view --clusterrole=view --user=bob -n dev
+</code></pre></div>
+      <p>Bob can now see most things in <code>dev</code> and nothing in <code>prod</code>. Kubernetes ships four ready-made ClusterRoles for this:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>ClusterRole</th><th>Gives</th></tr></thead>
+        <tbody>
+          <tr><td><code>view</code></td><td>read most things in a namespace. Cannot read Secrets.</td></tr>
+          <tr><td><code>edit</code></td><td>read and write most things in a namespace, including Secrets. Cannot change roles.</td></tr>
+          <tr><td><code>admin</code></td><td>everything in a namespace, including roles and bindings there.</td></tr>
+          <tr><td><code>cluster-admin</code></td><td><strong>everything, everywhere</strong>.</td></tr>
+        </tbody>
+      </table></div>
+
+      <h2>There is no "User" object</h2>
+      <p>This surprises people. You will not find <code>kubectl get users</code>. Kubernetes does not store people. The identity <code>alice</code> comes from outside: a client certificate with <code>CN=alice</code>, or a token from your company's login system (OIDC). RBAC only ever sees a name and a list of groups, and the binding matches on those strings.</p>
+      <p>Pods are different. They get an identity that <em>is</em> an object: a ServiceAccount.</p>
+
+      <h2>ServiceAccounts: identities for Pods</h2>
+      <p>A <strong>ServiceAccount</strong> is the identity a Pod uses when it talks to the API server. Every namespace has one called <code>default</code>. A Pod that does not choose one runs as it.</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl create serviceaccount viewer -n dev
+kubectl get serviceaccounts -n dev
+kubectl create token viewer -n dev
+</code></pre></div>
+      <div class="code" data-lang="yaml"><pre><code>
+spec:
+  serviceAccountName: viewer
+  automountServiceAccountToken: true
+  containers:
+    - name: app
+      image: curlimages/curl
+</code></pre></div>
+      <ul>
+        <li><code>create token</code> prints a short-lived token for that ServiceAccount, valid for a limited time. That is what scripts and CI should use.</li>
+        <li>Inside a Pod, the token appears as a file under <code>/var/run/secrets/kubernetes.io/serviceaccount/</code>, with the cluster's CA certificate and the namespace. It is a <strong>bound</strong>, time-limited token that the kubelet refreshes, not a permanent Secret. (Older clusters created long-lived token Secrets automatically. Modern ones do not.)</li>
+        <li>Set <code>automountServiceAccountToken: false</code> on Pods that never talk to the API. A Pod that cannot see a token cannot misuse it.</li>
+      </ul>
+
+      <p>A ServiceAccount has no permissions until you bind a Role to it. The subject looks like this:</p>
+      <div class="code" data-lang="yaml"><pre><code>
+subjects:
+  - kind: ServiceAccount
+    name: viewer
+    namespace: dev
+</code></pre></div>
+      <p>Its full identity string is <code>system:serviceaccount:dev:viewer</code>, which you will use when testing.</p>
+
+      <h2>Asking "can they?"</h2>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl auth can-i list pods -n dev
+kubectl auth can-i delete pods -n dev --as alice
+kubectl auth can-i list pods -n dev --as system:serviceaccount:dev:viewer
+kubectl auth can-i --list -n dev --as alice
+kubectl auth whoami
+</code></pre></div>
+      <ul>
+        <li><code>can-i</code> answers <code>yes</code> or <code>no</code>. It is the first thing to try when you see a <code>Forbidden</code> error.</li>
+        <li><code>--as</code> asks as someone else (impersonation). It needs permission to impersonate, which an admin has.</li>
+        <li><code>--list</code> prints everything the identity may do in that namespace.</li>
+        <li><code>auth whoami</code> tells you the identity and groups the API server sees for <em>you</em>.</li>
+      </ul>
+      <p>A denial looks like this, and it tells you exactly what to grant:</p>
+      <div class="code" data-lang="plain"><pre><code>
+Error from server (Forbidden): pods is forbidden: User "alice" cannot list resource "pods" in API group "" in the namespace "dev"
+</code></pre></div>
+      <p>Read it as a recipe: user <code>alice</code>, verb <code>list</code>, resource <code>pods</code>, group <code>""</code>, namespace <code>dev</code>.</p>
+
+      <h2>Giving less than you could</h2>
+      <ul>
+        <li><strong>One ServiceAccount per app</strong>, with only what that app needs. Never reuse <code>default</code> for something with permissions.</li>
+        <li><strong>Avoid <code>cluster-admin</code></strong> for anything except a very small group of humans. A tool that "needs cluster-admin" usually does not.</li>
+        <li><strong>Avoid wildcards</strong> (<code>verbs: ["*"]</code>, <code>resources: ["*"]</code>). They grow silently as new resources appear.</li>
+        <li><strong>Be careful with Secrets, <code>pods/exec</code> and <code>create pods</code>.</strong> Reading Secrets is obvious. Being able to create a Pod, or exec into one, often means being able to reach more than you were granted.</li>
+        <li><strong>Prefer namespaced bindings</strong> over cluster-wide ones.</li>
+        <li>You cannot grant what you do not have. The API server blocks privilege escalation: to create a Role with a permission, you must hold it yourself (or hold the special <code>escalate</code> verb).</li>
+      </ul>
+
+      <h3>The Pod side of the same idea</h3>
+      <p>RBAC controls what an <em>identity</em> may ask the API. A Pod's <code>securityContext</code> controls what its <em>process</em> may do on the node. Keep the second one tight too:</p>
+      <div class="code" data-lang="yaml"><pre><code>
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: app
+      image: registry.example.com/team/web:1.4.2
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+</code></pre></div>
+      <ul>
+        <li><code>runAsNonRoot</code> refuses to start a container that would run as root.</li>
+        <li><code>allowPrivilegeEscalation: false</code> stops a process gaining more rights than its parent.</li>
+        <li><code>readOnlyRootFilesystem</code> makes the container's own filesystem read-only. Write only to mounted volumes.</li>
+        <li><code>capabilities: drop: ["ALL"]</code> removes the special Linux powers a root process normally has.</li>
+        <li>Clusters can <strong>enforce</strong> such settings per namespace with Pod Security Admission, by labelling the namespace (for example <code>pod-security.kubernetes.io/enforce: restricted</code>). The three levels are <code>privileged</code>, <code>baseline</code> and <code>restricted</code>.</li>
+      </ul>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li><strong>It is the permissions chapter again.</strong> Users, groups and <code>rwx</code> become subjects, roles and verbs. "Give the group <code>developers</code> access" becomes "bind a Role to the group <code>developers</code>".</li>
+        <li><strong>A RoleBinding is <code>usermod -aG</code>.</strong> It adds an identity to a set of permissions. And just like <code>-aG</code>, the point is that it <em>adds</em> and never takes away. RBAC has no deny.</li>
+        <li><strong>A ServiceAccount is a system user for a program.</strong> Nginx runs as <code>www-data</code>, not as <code>root</code>, so a bug in Nginx cannot rewrite the whole system. A Pod runs as a ServiceAccount for the same reason.</li>
+        <li><strong><code>cluster-admin</code> is <code>root</code>.</strong> <code>sudo</code> did not mean "become root forever", and a ClusterRoleBinding should not either: give it briefly, to few people, with a reason.</li>
+        <li><strong><code>kubectl auth can-i --as</code> is <code>sudo -u alice</code></strong> for permission checks: "what would alice be able to do?"</li>
+        <li><strong>"Do not <code>chmod 777</code> to fix a permission problem."</strong> The Kubernetes version is "do not bind <code>cluster-admin</code> to make an error go away". Read the Forbidden message, and grant that one thing.</li>
+        <li><strong><code>runAsNonRoot</code></strong> is the container-sized version of "do not run it as root".</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Binding in the wrong namespace.</strong> A RoleBinding grants access only in <em>its own</em> namespace. A binding in <code>default</code> does nothing for <code>dev</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"Role and ClusterRole are the same."</strong> A Role is one namespace. A ClusterRole can also cover cluster-wide objects like Nodes, and can be bound cluster-wide. Cluster-scoped resources can only be granted through a ClusterRole.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Granting <code>get</code> and expecting <code>kubectl get pods</code> to work.</strong> Listing needs <code>list</code>. Following needs <code>watch</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Wrong <code>apiGroups</code>.</strong> Deployments are in <code>apps</code>, not <code>""</code>. A rule on <code>deployments</code> with group <code>""</code> matches nothing.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"I'll deny Bob access to Secrets."</strong> There is no deny. You can only avoid granting it. Check that none of his roles, or his groups' roles, include it, and remember the <code>edit</code> and <code>admin</code> roles do.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Giving every app the <code>default</code> ServiceAccount with extra rights.</strong> Every other Pod in that namespace shares it. Create one ServiceAccount per app.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Leaving the token mounted in Pods that do not need it.</strong> If the app is compromised, so is whatever that token can do. Turn <code>automountServiceAccountToken</code> off.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p><code>kubectl create clusterrolebinding … --clusterrole=cluster-admin</code> hands over the whole cluster. And any identity in the group <code>system:masters</code> <strong>bypasses RBAC completely</strong>, with no way to take it back short of changing the credentials. Treat both like a root password.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>On the kind cluster. You are cluster-admin on your own laptop cluster, so we use <code>--as</code> to pretend to be Alice, and a Pod that calls the API with its ServiceAccount token.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl create namespace dev
+
+# ---- 1. a person (impersonated) ----
+kubectl auth can-i list pods -n dev --as alice            # no
+kubectl create role pod-reader --verb=get,list,watch --resource=pods -n dev
+kubectl create rolebinding alice-pod-reader --role=pod-reader --user=alice -n dev
+kubectl auth can-i list pods -n dev --as alice            # yes
+kubectl auth can-i delete pods -n dev --as alice          # no: reading is not deleting
+kubectl auth can-i list pods -n prod --as alice           # no: the binding is only in dev
+kubectl get pods -n dev --as alice
+kubectl get secrets -n dev --as alice                     # Forbidden: read the error out loud
+kubectl auth can-i --list -n dev --as alice
+
+# ---- 2. a Pod ----
+kubectl create serviceaccount viewer -n dev
+kubectl apply -n dev -f - &lt;&lt;'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-test
+spec:
+  serviceAccountName: viewer
+  containers:
+    - name: curl
+      image: curlimages/curl
+      command: ["sleep", "3600"]
+EOF
+kubectl wait -n dev --for=condition=Ready pod/api-test --timeout=90s
+kubectl exec -n dev api-test -- ls /var/run/secrets/kubernetes.io/serviceaccount
+
+# the Pod calls the API with its own token: first denied ...
+kubectl exec -n dev api-test -- sh -c 'curl -s --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" https://kubernetes.default.svc/api/v1/namespaces/dev/pods | head -12'
+
+# ... then allowed after a binding
+kubectl create rolebinding viewer-pod-reader --role=pod-reader --serviceaccount=dev:viewer -n dev
+kubectl exec -n dev api-test -- sh -c 'curl -s --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" https://kubernetes.default.svc/api/v1/namespaces/dev/pods | head -12'
+
+# ---- clean up ----
+kubectl delete namespace dev
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>Part 1: <code>no</code>, then <code>yes</code> after the binding, then <code>no</code> for delete and for another namespace. The Forbidden message names the user, verb, resource, group and namespace.</li>
+        <li>Part 2: the first <code>curl</code> returns a JSON error of kind <code>Status</code> with code <code>403</code> and a message naming <code>system:serviceaccount:dev:viewer</code>. After the binding, the same request returns a <code>PodList</code>. The Pod's identity is the ServiceAccount, and its rights come only from bindings.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>Explain Role, ClusterRole, RoleBinding and ClusterRoleBinding.</summary>
+          <div class="answer">
+            <p>A Role is a list of permissions, verbs on resources, inside one namespace. A ClusterRole is the same but cluster-wide, so it can cover cluster-scoped objects like Nodes or all namespaces. A binding attaches a role to subjects: users, groups or ServiceAccounts. A RoleBinding grants within its own namespace, and it may reference either a Role or a ClusterRole, which is a handy way to reuse a definition per namespace. A ClusterRoleBinding grants cluster-wide.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How do Kubernetes users work?</summary>
+          <div class="answer">
+            <p>There's no User object. Kubernetes doesn't store people. Identity comes from outside: a client certificate where the common name is the user, or tokens from an OIDC identity provider. The API server authenticates the request and gets a username and groups, and RBAC matches bindings against those strings. ServiceAccounts are the exception: they're real objects, used by Pods and automation.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How would you check what a user or ServiceAccount can do?</summary>
+          <div class="answer">
+            <p><code>kubectl auth can-i</code>, with <code>--as</code> to impersonate, for example <code>--as system:serviceaccount:dev:viewer</code>. <code>--list</code> prints everything they can do in a namespace. When I see a Forbidden error, it names the user, verb, resource, API group and namespace, so I know exactly what's missing, and I grant that one permission and no more.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What is a ServiceAccount, and how has its token changed?</summary>
+          <div class="answer">
+            <p>It's the identity a Pod uses to call the API. Each namespace has a default one, and I should create one per application. Its token is mounted into the Pod at <code>/var/run/secrets/kubernetes.io/serviceaccount</code>. Modern clusters use short-lived, bound tokens that the kubelet refreshes, instead of the old permanent token Secrets. If the Pod doesn't need the API, I set <code>automountServiceAccountToken: false</code>.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How do you apply least privilege in a cluster?</summary>
+          <div class="answer">
+            <p>One ServiceAccount per app with a narrow Role. Namespaced bindings rather than cluster-wide ones. No wildcards, and no cluster-admin except for a few humans. Extra care with Secrets, <code>pods/exec</code> and the right to create Pods. On the Pod side, run as non-root with a read-only filesystem and dropped capabilities, enforced per namespace with Pod Security Admission. And RBAC has no deny rules, so I audit what's granted with <code>can-i --list</code>.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Start</strong> from nothing and add. <strong>Read</strong> the Forbidden message and grant exactly that. <strong>One</strong> ServiceAccount per app. <strong>Prefer</strong> RoleBindings to ClusterRoleBindings. <strong>Test</strong> with <code>kubectl auth can-i --as</code>. <strong>Treat</strong> <code>cluster-admin</code> and <code>system:masters</code> like root. And remember: it is the permissions chapter of the Linux handbook, with new nouns.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -21,7 +21,7 @@
     { n: 13, file: "13-probes-resources.html", title: "Probes, requests, limits, self-healing", ready: true },
     { n: 14, file: "14-workloads.html",        title: "StatefulSets, DaemonSets, Jobs, CronJobs", ready: true },
     { n: 15, file: "15-scheduling.html",       title: "Scheduling: taints, tolerations, affinity", ready: true },
-    { n: 16, file: "16-rbac.html",             title: "RBAC and ServiceAccounts" },
+    { n: 16, file: "16-rbac.html",             title: "RBAC and ServiceAccounts", ready: true },
     { n: 17, file: "17-networking.html",       title: "Networking: Pod network, CNI, NetworkPolicy" },
     { n: 18, file: "18-helm.html",             title: "Helm" },
     { n: 19, file: "19-operators.html",        title: "Operators, CRDs, the reconcile loop" },
