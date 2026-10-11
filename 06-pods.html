@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pods · Kubernetes Handbook</title>
+<meta name="description" content="What a Pod is, why Kubernetes runs Pods and not bare containers, and how to create, inspect and delete one.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="6">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Pods</h1>
+            <p class="sub">The smallest thing Kubernetes runs</p>
+          </div>
+          <span class="pill">Section 06</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">With Docker you ran a container. In Kubernetes you never run a container directly. You run a Pod, and the Pod runs your containers. This chapter is about why that extra layer exists and how to read one.</p>
+
+      <h2>The problem</h2>
+      <p>Imagine you run nginx to serve a website. Next to it you want a tiny helper that rewrites <code>index.html</code> every few seconds. Two programs. They must:</p>
+      <ul>
+        <li>start together and stop together,</li>
+        <li>talk to each other over <code>localhost</code>,</li>
+        <li>share one folder on disk.</li>
+      </ul>
+      <p>On a plain Linux server that is easy. Two processes on one machine already share a network and a disk. Docker alone makes it awkward: every container gets its own network and its own filesystem.</p>
+      <p>Kubernetes needs a unit that means "these containers belong together". That unit is the <strong>Pod</strong>.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>A Pod is one or more containers that share a network address and storage, are placed on the same node, and live and die together.</p>
+      </div>
+
+      <div class="cards">
+        <div class="card"><span class="tag">Think of it as</span><p>A flat. The containers are flatmates. One street address (the IP), one shared kitchen (volumes), and they move in and out together.</p></div>
+        <div class="card"><span class="tag">Most of the time</span><p>A Pod holds exactly one container. Several containers in one Pod is for tightly coupled helpers, not for "my app and my database".</p></div>
+        <div class="card"><span class="tag">It does not</span><p>Heal itself, scale itself, or move itself to another node. Other objects do that. A Pod is the thing they manage.</p></div>
+        <div class="card"><span class="tag">Short-lived</span><p>Pods are disposable. When one is replaced, the new one is a different Pod with a different IP.</p></div>
+      </div>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 720 340" role="img" aria-labelledby="pd-t pd-d">
+          <title id="pd-t">One Pod with two containers on a node</title>
+          <desc id="pd-d">Inside a node, a Pod holds an nginx container and a writer container. They talk over localhost and share a volume. The Pod has one IP address that another Pod uses to reach it.</desc>
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/>
+            </marker>
+          </defs>
+          <rect class="box-node" x="8" y="8" width="704" height="324" rx="14"/>
+          <text class="t t-b" x="26" y="34">Node (one Linux machine)</text>
+
+          <rect class="box-pod" x="30" y="52" width="440" height="266" rx="12"/>
+          <text class="t t-b" x="48" y="78">Pod: web-with-helper</text>
+          <text class="t-mono" x="48" y="98">IP 10.244.0.x (one for the whole Pod)</text>
+
+          <rect class="box-ctr" x="52" y="118" width="150" height="82" rx="8"/>
+          <text class="t t-b" x="127" y="150" text-anchor="middle">container</text>
+          <text class="t-mono" x="127" y="174" text-anchor="middle">nginx :80</text>
+
+          <rect class="box-ctr" x="298" y="118" width="150" height="82" rx="8"/>
+          <text class="t t-b" x="373" y="150" text-anchor="middle">container</text>
+          <text class="t-mono" x="373" y="174" text-anchor="middle">writer</text>
+
+          <line x1="206" y1="159" x2="294" y2="159" stroke="var(--muted)" stroke-width="2" stroke-dasharray="4 4"/>
+          <text class="t-sm" x="250" y="150" text-anchor="middle">localhost</text>
+
+          <line x1="127" y1="204" x2="127" y2="232" stroke="var(--muted)" stroke-width="2"/>
+          <line x1="373" y1="204" x2="373" y2="232" stroke="var(--muted)" stroke-width="2"/>
+          <rect class="vol" x="52" y="232" width="396" height="56" rx="8"/>
+          <text class="t t-b" x="250" y="256" text-anchor="middle">shared volume (emptyDir)</text>
+          <text class="t-sm" x="250" y="276" text-anchor="middle">both containers see the same files</text>
+
+          <rect class="box-ext" x="540" y="118" width="150" height="82" rx="10"/>
+          <text class="t t-b" x="615" y="150" text-anchor="middle">another Pod</text>
+          <text class="t-sm" x="615" y="174" text-anchor="middle">or a Service</text>
+          <line class="arrow" x1="538" y1="159" x2="474" y2="159"/>
+          <text class="t-sm" x="506" y="146" text-anchor="middle">Pod IP</text>
+        </svg>
+        <figcaption>One Pod, two containers, one IP. Containers talk to each other on localhost. Everyone else talks to the Pod IP.</figcaption>
+      </figure>
+
+      <h2>Your first Pod</h2>
+      <p>Everything in Kubernetes is described in YAML (a plain-text format for nested settings). Here is the smallest useful Pod:</p>
+
+      <div class="code" data-lang="yaml" data-file="nginx-pod.yaml"><pre><code>
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+  labels:
+    app: web
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.27
+      ports:
+        - containerPort: 80
+</code></pre></div>
+
+      <p>Read it top to bottom, the way you read an <code>ls -l</code> line:</p>
+
+      <div class="code" data-lang="tree"><pre><code>
+apiVersion: v1          what version of the API describes this object
+kind: Pod               what type of object it is
+metadata:
+  name: web             its name, unique among Pods in a namespace
+  labels: app: web      a sticky note you can search by (chapter 8)
+spec:                   what you WANT, not what exists
+  containers:           a list: one entry per container
+    - name: nginx       a name for this container inside the Pod
+      image: nginx:1.27 which image to run (use a version tag)
+      ports: 80         a note for humans and tools, see "Common mistakes"
+</code></pre></div>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p><code>spec</code> is what you ask for. Kubernetes keeps a second block, <code>status</code>, for what is actually happening. Most of the work in Kubernetes is making <code>status</code> match <code>spec</code>.</p>
+      </div>
+
+      <h2>Create it: three ways</h2>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl apply -f nginx-pod.yaml
+kubectl run web --image=nginx:1.27 --port=80
+kubectl run web --image=nginx:1.27 --port=80 --dry-run=client -o yaml
+</code></pre></div>
+
+      <ul>
+        <li><code>apply -f</code> reads the file and makes the cluster match it. This is the way you will use most.</li>
+        <li><code>run</code> creates a Pod straight from flags. Quick for experiments, nothing saved.</li>
+        <li><code>--dry-run=client -o yaml</code> creates nothing. It prints the YAML that <code>run</code> would send. It is the fastest way to get a starting file.</li>
+      </ul>
+
+      <p>The third command printed this on a real cluster. Notice what Kubernetes added for you: <code>restartPolicy: Always</code> and <code>dnsPolicy: ClusterFirst</code> are defaults.</p>
+
+      <div class="code" data-lang="out"><pre><code>
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    run: web
+  name: web
+spec:
+  containers:
+  - image: nginx:1.27
+    name: web
+    ports:
+    - containerPort: 80
+    resources: {}
+  dnsPolicy: ClusterFirst
+  restartPolicy: Always
+status: {}
+</code></pre></div>
+
+      <h2>Look at it</h2>
+      <p>Three commands answer almost every question about a Pod.</p>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get pod web
+kubectl get pod web -o wide
+kubectl describe pod web
+</code></pre></div>
+
+      <ul>
+        <li><code>get</code> is the one-line summary.</li>
+        <li><code>-o wide</code> adds the Pod IP and the node it landed on.</li>
+        <li><code>describe</code> is the full story, with a list of <strong>Events</strong> at the bottom. When something is wrong, read the events first.</li>
+      </ul>
+
+      <div class="code" data-lang="out"><pre><code>
+NAME   READY   STATUS    RESTARTS   AGE   IP             NODE       NOMINATED NODE   READINESS GATES
+web    1/1     Running   0          1s    10.244.0.127   minikube   &lt;none&gt;           &lt;none&gt;
+</code></pre></div>
+
+      <p>Column by column:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Column</th><th>What it tells you</th></tr></thead>
+        <tbody>
+          <tr><td><code>READY</code></td><td>Containers that are ready, out of the containers in the Pod. <code>1/2</code> means one of two is ready.</td></tr>
+          <tr><td><code>STATUS</code></td><td>A human-friendly reason: <code>Running</code>, <code>ImagePullBackOff</code>, <code>CrashLoopBackOff</code>…</td></tr>
+          <tr><td><code>RESTARTS</code></td><td>How many times the <em>containers</em> restarted. The Pod itself stays the same.</td></tr>
+          <tr><td><code>IP</code></td><td>The Pod's own address inside the cluster. It changes if the Pod is replaced.</td></tr>
+          <tr><td><code>NODE</code></td><td>Which machine the Pod was placed on.</td></tr>
+        </tbody>
+      </table></div>
+
+      <p>The bottom of <code>describe</code> is a timeline of what happened to the Pod:</p>
+      <div class="code" data-lang="out"><pre><code>
+Events:
+  Type    Reason     Age   From               Message
+  ----    ------     ----  ----               -------
+  Normal  Scheduled  1s    default-scheduler  Successfully assigned default/web to minikube
+  Normal  Pulled     1s    kubelet            spec.containers{nginx}: Container image "nginx:1.27" already present on machine and can be accessed by the pod
+  Normal  Created    1s    kubelet            spec.containers{nginx}: Container created
+  Normal  Started    1s    kubelet            spec.containers{nginx}: Container started
+</code></pre></div>
+      <div class="flow"><span>Scheduled (scheduler picks a node)</span><i>→</i><span>Pulled (kubelet gets the image)</span><i>→</i><span>Created</span><i>→</i><span>Started</span></div>
+      <p>This run had the image cached already. On a node that has never seen the image, you also get a <code>Pulling</code> event first, and the wait can be many seconds.</p>
+      <p>Two different programs wrote those lines. The <code>default-scheduler</code> picked a node. Then the <code>kubelet</code> on that node did the work. Chapter 3 explains who they are. For now, remember that "who wrote this event" tells you which part of the cluster to look at.</p>
+
+      <h2>Talk to it</h2>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl logs web
+kubectl exec -it web -- sh
+kubectl port-forward pod/web 8080:80
+</code></pre></div>
+
+      <ul>
+        <li><code>logs</code> prints what the container wrote to stdout and stderr. Add <code>-f</code> to follow, <code>--previous</code> to see the last crashed run.</li>
+        <li><code>exec -it web -- sh</code> opens a shell inside the container. The <code>--</code> separates kubectl's flags from the command you want to run in there.</li>
+        <li><code>port-forward</code> makes <code>localhost:8080</code> on your laptop reach port 80 in the Pod. Use it to test. It is not how real traffic arrives (chapters 9 and 10).</li>
+      </ul>
+
+      <div class="code" data-lang="bash"><pre><code>
+curl -I localhost:8080
+</code></pre></div>
+      <div class="code" data-lang="out"><pre><code>
+HTTP/1.1 200 OK
+Server: nginx/1.27.5
+</code></pre></div>
+
+      <h2>Two containers, one Pod</h2>
+      <p>Back to the problem from the start. nginx serves a folder. A second container writes into it. They share a volume called <code>shared</code>.</p>
+
+      <div class="code" data-lang="yaml" data-file="web-with-helper.yaml"><pre><code>
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-with-helper
+spec:
+  volumes:
+    - name: shared
+      emptyDir: {}
+  containers:
+    - name: nginx
+      image: nginx:1.27
+      volumeMounts:
+        - name: shared
+          mountPath: /usr/share/nginx/html
+    - name: writer
+      image: busybox:1.37
+      command: ["sh", "-c", "while true; do date > /data/index.html; sleep 5; done"]
+      volumeMounts:
+        - name: shared
+          mountPath: /data
+</code></pre></div>
+
+      <p><code>volumes</code> is declared once, at the Pod level. Each container then <em>mounts</em> it where it wants, like <code>mount</code> on Linux. <code>emptyDir</code> starts empty and is deleted when the Pod goes away.</p>
+
+      <p>Because both containers share the Pod's network, the <code>writer</code> container can reach nginx on <code>localhost</code>:</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl exec web-with-helper -c writer -- wget -qO- localhost
+</code></pre></div>
+      <div class="code" data-lang="out"><pre><code>
+Sun Oct 11 11:25:08 UTC 2026
+</code></pre></div>
+      <p>The <code>-c</code> flag picks a container. You need it whenever a Pod has more than one.</p>
+
+      <div class="callout key">
+        <span class="label">Native sidecars</span>
+        <p>A "helper that lives next to the app" is called a <strong>sidecar</strong>. Since Kubernetes 1.33 there is a proper way to declare one: put it under <code>initContainers</code> and set <code>restartPolicy: Always</code> on that container. It then starts before the main container and keeps running next to it. The <code>writer</code> above is the older, still valid style: just a second entry in <code>containers</code>.</p>
+      </div>
+
+      <h2>Linux you already know</h2>
+      <p>A container is not a small virtual machine. It is a <strong>normal Linux process</strong> that the kernel has fenced in with <strong>namespaces</strong> (what it can see) and <strong>cgroups</strong> (how much it can use). You met both ideas in the Linux handbook: <code>ps</code>, <code>/proc</code>, and the kernel that decides who gets CPU and memory.</p>
+      <p>A Pod is the same trick applied to a group. Look at the namespaces of PID 1 in each container of <code>web-with-helper</code> (<code>nginx</code> uses GNU <code>ls</code>, <code>busybox</code> a smaller one, which is why the spacing differs):</p>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl exec web-with-helper -c nginx  -- ls -l /proc/1/ns/net /proc/1/ns/ipc /proc/1/ns/mnt /proc/1/ns/pid
+kubectl exec web-with-helper -c writer -- ls -l /proc/1/ns/net /proc/1/ns/ipc /proc/1/ns/mnt /proc/1/ns/pid
+</code></pre></div>
+      <p>The <code>nginx</code> container:</p>
+      <div class="code" data-lang="out"><pre><code>
+lrwxrwxrwx 1 root root 0 Oct 11 11:25 /proc/1/ns/ipc -> ipc:[4026536930]
+lrwxrwxrwx 1 root root 0 Oct 11 11:25 /proc/1/ns/mnt -> mnt:[4026537332]
+lrwxrwxrwx 1 root root 0 Oct 11 11:25 /proc/1/ns/net -> net:[4026536933]
+lrwxrwxrwx 1 root root 0 Oct 11 11:25 /proc/1/ns/pid -> pid:[4026537334]
+</code></pre></div>
+      <p>The <code>writer</code> container:</p>
+      <div class="code" data-lang="out"><pre><code>
+lrwxrwxrwx    1 root     root             0 Oct 11 11:25 /proc/1/ns/ipc -> ipc:[4026536930]
+lrwxrwxrwx    1 root     root             0 Oct 11 11:25 /proc/1/ns/mnt -> mnt:[4026537336]
+lrwxrwxrwx    1 root     root             0 Oct 11 11:25 /proc/1/ns/net -> net:[4026536933]
+lrwxrwxrwx    1 root     root             0 Oct 11 11:25 /proc/1/ns/pid -> pid:[4026537338]
+</code></pre></div>
+      <p>Compare the numbers in brackets. Same number means same namespace.</p>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th>Namespace</th><th>Same number in both?</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td><code>net</code></td><td>yes</td><td>One network stack. Same IP, same <code>localhost</code>, same port space.</td></tr>
+          <tr><td><code>ipc</code></td><td>yes</td><td>They can use shared memory and semaphores.</td></tr>
+          <tr><td><code>mnt</code></td><td>no</td><td>Each container has its own root filesystem. They only share what you mount.</td></tr>
+          <tr><td><code>pid</code></td><td>no</td><td>Each container sees only its own processes (by default).</td></tr>
+        </tbody>
+      </table></div>
+
+      <p>Two more Linux links:</p>
+      <ul>
+        <li><strong>Deleting a Pod</strong> works like <code>kill</code>, not <code>kill -9</code>. Kubernetes sends SIGTERM, waits (30 seconds by default, set by <code>terminationGracePeriodSeconds</code>), then sends SIGKILL.</li>
+        <li><strong><code>restartPolicy: Always</code></strong> is the Pod-sized version of <code>Restart=always</code> in a systemd unit. The kubelet restarts the container on the same node. The Pod is not recreated.</li>
+      </ul>
+
+      <h2>Pods are mortal</h2>
+      <p>This is the sentence to take away from the chapter. Delete a Pod made with the YAML above and it is simply gone. Nothing brings it back.</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl delete pod web
+kubectl get pod web
+</code></pre></div>
+      <div class="code" data-lang="out"><pre><code>
+pod "web" deleted from default namespace
+Error from server (NotFound): pods "web" not found
+</code></pre></div>
+      <p>A Pod is also never moved. If its node dies, the Pod dies with it. Something else has to notice and create a new Pod, and that something is a controller. The next chapter introduces the most common one, the Deployment.</p>
+
+      <div class="flow"><span>You create a Pod</span><i>→</i><span>It runs on one node</span><i>→</i><span>It dies</span><i>→</i><span>Nobody replaces it (unless a controller owns it)</span></div>
+
+      <h3>Phases, and why STATUS says more</h3>
+      <p>A Pod has a <strong>phase</strong>, a coarse summary of where it is in its life:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Phase</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>Pending</code></td><td>Accepted by the cluster, but not all containers are set up yet. Not placed on a node, or still pulling images.</td></tr>
+          <tr><td><code>Running</code></td><td>Placed on a node, all containers created, at least one still running or starting.</td></tr>
+          <tr><td><code>Succeeded</code></td><td>Every container finished successfully and will not restart.</td></tr>
+          <tr><td><code>Failed</code></td><td>Every container finished, and at least one failed.</td></tr>
+          <tr><td><code>Unknown</code></td><td>The state could not be obtained, usually because the node cannot be reached.</td></tr>
+        </tbody>
+      </table></div>
+      <p>The <code>STATUS</code> column in <code>kubectl get</code> is friendlier and more detailed. It is not the same thing as the phase. Here is a Pod with a typo in the image tag:</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl run oops --image=nginx:1.27-typo
+kubectl get pod oops
+</code></pre></div>
+      <div class="code" data-lang="out"><pre><code>
+NAME   READY   STATUS             RESTARTS   AGE
+oops   0/1     ImagePullBackOff   0          20s
+</code></pre></div>
+      <p>The phase of that Pod is still <code>Pending</code>. <code>ImagePullBackOff</code> is a container reason, not a phase. Chapter 20 gives you a fixed path for these.</p>
+
+      <h2>Common mistakes</h2>
+
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"I'll just run my app as a bare Pod."</strong> That works on a laptop. In real use nothing recreates a bare Pod when it or its node dies. Use a Deployment (chapter 7) for anything you want to stay up.</p>
+      </div>
+
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"<code>containerPort: 80</code> opens port 80."</strong> It does not. It is a note for humans and tools. The container listens on whatever port the program inside listens on, whether you list it or not.</p>
+      </div>
+
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"I'll edit the Pod to change a setting."</strong> Most of a Pod's <code>spec</code> cannot change after creation. You may update a container image, add tolerations, and a few time limits. For anything else, delete the Pod and create a new one, or change the controller above it.</p>
+      </div>
+
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"<code>image: nginx</code> is fine."</strong> With no tag, or with <code>:latest</code>, you get whatever is newest today, and Kubernetes pulls on every start. Pin a version like <code>nginx:1.27</code> so a restart next month runs the same thing.</p>
+      </div>
+
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"RESTARTS 5 means five new Pods."</strong> It means the same Pod's container restarted five times. The Pod, its IP and its volumes stay.</p>
+      </div>
+
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p><code>kubectl delete pod</code> on a Pod with no controller is permanent. Nothing recreates it, and an <code>emptyDir</code> volume goes with it. Check <code>kubectl get pod NAME -o yaml</code> for <code>ownerReferences</code> if you are not sure whether something will bring it back.</p>
+      </div>
+
+      <h2>Try it</h2>
+
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>You need any local cluster and <code>kubectl</code> pointed at it. The outputs in this chapter came from <strong>minikube on macOS</strong> (Docker driver). The commands are the same on kind or MicroK8s. Chapter 4 covers setup.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+# 1. check kubectl is talking to your cluster
+kubectl get nodes
+
+# 2. save the YAML from this chapter as nginx-pod.yaml, then create it
+kubectl apply -f nginx-pod.yaml
+
+# 3. watch it start (Ctrl+C to stop watching)
+kubectl get pod web --watch
+
+# 4. read the events
+kubectl describe pod web
+
+# 5. reach it from your laptop
+kubectl port-forward pod/web 8080:80
+# in a second terminal:
+curl -I localhost:8080
+
+# 6. look inside
+kubectl exec -it web -- sh
+ls -l /proc/1/ns
+
+# 7. break it on purpose, then read the events
+kubectl run oops --image=nginx:1.27-typo
+kubectl describe pod oops
+
+# 8. clean up
+kubectl delete pod web oops
+</code></pre></div>
+
+      <p>Questions to answer yourself before moving on:</p>
+      <ul>
+        <li>Which node did <code>web</code> land on, and which component put it there? (Hint: look at the first event.)</li>
+        <li>What does <code>kubectl get pod web</code> say after step 8? Why does nothing bring it back?</li>
+        <li>In step 7, which event line names the real problem?</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>What is a Pod, and why doesn't Kubernetes just run containers?</summary>
+          <div class="answer">
+            <p>A Pod is the smallest thing Kubernetes schedules. It is one or more containers that share a network address and storage and always land on the same node together. Kubernetes needs that unit because some programs have to sit side by side: an app and a log shipper, for example. Putting them in one Pod means they share <code>localhost</code> and a volume, and they start and stop together. Most Pods hold one container.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What do containers in the same Pod share, and what don't they share?</summary>
+          <div class="answer">
+            <p>They share the network: one IP, one <code>localhost</code>, one set of ports, so two containers cannot both listen on port 80. They share IPC, and any volumes you declare and mount. They do not share a root filesystem or, by default, a process tree. Under the hood it is Linux namespaces: the network and IPC namespaces are common, the mount and PID ones are separate.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>I deleted a Pod and it didn't come back. Why?</summary>
+          <div class="answer">
+            <p>Because nothing was responsible for it. A bare Pod is not watched by anything. If a Deployment, ReplicaSet or similar controller had owned it, that controller would have noticed the count was wrong and made a new Pod. I'd check <code>ownerReferences</code> on the Pod. In practice you almost never create bare Pods for real workloads.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>RESTARTS shows 4. Did Kubernetes create four new Pods?</summary>
+          <div class="answer">
+            <p>No. It is the same Pod. The kubelet on that node restarted the container four times because <code>restartPolicy</code> defaults to <code>Always</code>. The Pod name, IP and volumes are the same. A new Pod would have a new name and a new IP. If the restarts keep climbing, I'd look at <code>kubectl logs --previous</code> to see why the container keeps dying.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What is a sidecar, and how do you declare one?</summary>
+          <div class="answer">
+            <p>A sidecar is a helper container that runs next to the main one for the whole life of the Pod: a log shipper, a proxy, a config reloader. The classic way is just a second entry in <code>containers</code>. Since 1.33 there is a native way: an entry in <code>initContainers</code> with <code>restartPolicy: Always</code>. That one starts before the app, keeps running, and is handled properly on shutdown, so it fits things like proxies that must be up first.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Pin</strong> image tags. <strong>Read events</strong> before logs. <strong>Generate</strong> YAML with <code>--dry-run=client -o yaml</code> instead of typing it. <strong>Use <code>-c</code></strong> when a Pod has more than one container. <strong>Don't</strong> run bare Pods for anything you want to survive. Say it out loud: "A Pod is a group of containers sharing network and storage, scheduled together, and disposable."</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

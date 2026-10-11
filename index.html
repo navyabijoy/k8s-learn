@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kubernetes Handbook</title>
+<meta name="description" content="A plain-English Kubernetes handbook for explaining concepts out loud in an interview. Written for Kubernetes 1.37.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="0">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="hero">
+        <h1>Kubernetes <span>Handbook</span></h1>
+        <p class="lede">Explain Kubernetes out loud, in plain words. Every chapter starts with a problem, names the idea in one sentence, shows a tiny example you can run, then asks you the questions an interviewer would.</p>
+        <span class="version-pill">Written for Kubernetes 1.37 (latest stable: 1.37.1)</span>
+        <div class="rule" style="margin-top:18px"></div>
+      </header>
+
+      <div class="cards">
+        <div class="card"><span class="tag">You know</span><p>Basic Linux (users, permissions, processes, systemd, cron) and Docker basics. Kubernetes chapters keep pointing back to those.</p></div>
+        <div class="card"><span class="tag">You will</span><p>Run every example on a local cluster, read real output, and answer interview questions in your own words.</p></div>
+        <div class="card"><span class="tag">Colours</span><p>Blue is a key idea. Green is something to try. Amber is a common mistake. Red can break things. Purple is an interview question.</p></div>
+        <div class="card"><span class="tag">Print</span><p>Any chapter saves cleanly as a PDF from your browser's print dialog. Interview answers are expanded in print.</p></div>
+      </div>
+
+      <div class="callout key">
+        <span class="label">About the labs</span>
+        <p>Commands were checked against kubernetes.io for 1.37. The sample chapter's real outputs came from minikube on macOS running Kubernetes v1.35.1. Where output is shown, it was run. Where it was not run, only the command is shown.</p>
+      </div>
+
+      <h2>Chapters</h2>
+      <ol class="toc" id="toc"></ol>
+
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+<script>
+  (function () {
+    var toc = document.getElementById("toc");
+    if (!toc || !window.K8S_CHAPTERS) return;
+    toc.innerHTML = window.K8S_CHAPTERS.map(function (c) {
+      var n = c.n < 10 ? "0" + c.n : c.n;
+      var inner = '<span class="n">' + n + "</span><span>" + c.title + "</span>";
+      return c.ready
+        ? '<li><a href="' + c.file + '">' + inner + "</a></li>"
+        : '<li><span class="soon" style="display:flex;gap:12px;padding:12px 14px;border:1px dashed var(--border);border-radius:12px;color:var(--muted)">' + inner + "</span></li>";
+    }).join("");
+  })();
+</script>
+</body>
+</html>
