@@ -176,6 +176,7 @@ code, kbd {
   border-radius: 6px; padding: .08em .4em;
   white-space: nowrap;
 }
+code.long { white-space: normal; overflow-wrap: anywhere; }
 pre code { background: none; border: 0; padding: 0; font-size: inherit; white-space: inherit; }
 .lede { font-size: 1.05rem; }
 
@@ -354,7 +355,8 @@ details.qa .answer { padding: 0 16px 14px; border-top: 1px dashed var(--border);
   .code .file ~ .copy { top: 34px; }
   th, td { padding: 8px 10px; }
   table:has(th:nth-child(3)) { min-width: 520px; }
-  svg .t { font-size: 17px; } svg .t-sm { font-size: 14px; } svg .t-mono { font-size: 15px; }
+  figure.diagram { overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 10px 8px; }
+  figure.diagram svg { min-width: 640px; }
 }
 
 /* ---------- Print: save any chapter as PDF ---------- */
