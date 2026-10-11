@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deployments, ReplicaSets, rollouts · Kubernetes Handbook</title>
+<meta name="description" content="A bare Pod dies and stays dead. A Deployment is the answer to 'keep three copies running, and let me change the version without anyone noticing'. It is the object you will write most often. By the end">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="7">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Deployments, ReplicaSets, rollouts</h1>
+            <p class="sub">How a Pod gets replaced, scaled and rolled back</p>
+          </div>
+          <span class="pill">Section 07</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">A bare Pod dies and stays dead. A Deployment is the answer to "keep three copies running, and let me change the version without anyone noticing". It is the object you will write most often. By the end of this chapter you can explain how a rolling update works, one Pod at a time.</p>
+
+      <h2>The problem</h2>
+      <p>You ran <code>web</code> as a Pod. Now three things go wrong, one after another:</p>
+      <ul>
+        <li>The node dies. Your Pod is gone. Nobody replaces it.</li>
+        <li>Traffic grows. You want five copies, not one.</li>
+        <li>You ship version 2. You do not want to delete the old Pod and wait while the new one starts. Users would see an outage.</li>
+      </ul>
+      <p>You need something that holds a <em>number</em> and a <em>template</em>, and keeps reality equal to them. That is a Deployment.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>A Deployment says "I want N copies of this Pod template, always". It creates a ReplicaSet to hold the copies, and when you change the template it moves from the old ReplicaSet to a new one, a few Pods at a time.</p>
+      </div>
+
+      <div class="flow"><span>Deployment <small>(the plan)</small></span><i>→</i><span>ReplicaSet <small>(counts heads)</small></span><i>→</i><span>Pod</span><i>·</i><span>Pod</span><i>·</i><span>Pod</span></div>
+
+      <div class="cards">
+        <div class="card"><span class="tag">Deployment</span><p>Holds the replica count and the Pod template. Handles updates and rollbacks. You write this one.</p></div>
+        <div class="card"><span class="tag">ReplicaSet</span><p>Keeps exactly N Pods matching its template running. The Deployment creates it. You rarely touch it.</p></div>
+        <div class="card"><span class="tag">Pod</span><p>The thing that actually runs. Created and replaced by the ReplicaSet.</p></div>
+        <div class="card"><span class="tag">Why two layers?</span><p>Each version of your template gets its own ReplicaSet. That is what makes rollbacks possible: the old one is still there.</p></div>
+      </div>
+
+      <h2>Your first Deployment</h2>
+      <div class="code" data-lang="yaml" data-file="web-deploy.yaml"><pre><code>
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  labels:
+    app: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27
+          ports:
+            - containerPort: 80
+</code></pre></div>
+
+      <p>Break it into the two halves that matter:</p>
+      <div class="code" data-lang="tree"><pre><code>
+spec:
+  replicas: 3              how many copies
+  selector:                how the Deployment finds ITS Pods
+    matchLabels:
+      app: web             ──┐ these two must match
+  template:                  │
+    metadata:                │
+      labels:                │
+        app: web           ──┘
+    spec:                    everything below here is just a Pod spec,
+      containers: ...        the same one you wrote in chapter 6
+</code></pre></div>
+
+      <p>Everything under <code>template</code> is a Pod, minus <code>apiVersion</code> and <code>kind</code>. The Deployment stamps out Pods from it.</p>
+      <p>The <code>selector</code> is how the Deployment knows which Pods are its own: any Pod carrying the label <code>app: web</code>. So the labels in the template <strong>must</strong> match the selector. If they do not, the API server refuses the Deployment.</p>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl apply -f web-deploy.yaml
+kubectl get deployment web
+kubectl get replicaset
+kubectl get pods -l app=web
+</code></pre></div>
+      <ul>
+        <li><code>get deployment</code> shows <code>READY 3/3</code> once all copies are up. <code>UP-TO-DATE</code> counts Pods already on the newest template. <code>AVAILABLE</code> counts Pods ready for traffic.</li>
+        <li><code>get replicaset</code> shows one ReplicaSet named <code>web-</code> plus a hash, like <code>web-6d4cf56db6</code>. The hash comes from the Pod template. Change the template, get a new hash, get a new ReplicaSet.</li>
+        <li><code>get pods -l app=web</code> shows three Pods named <code>web-&lt;hash&gt;-&lt;random&gt;</code>. The name tells you which ReplicaSet made it.</li>
+      </ul>
+
+      <h3>Self-healing, in one command</h3>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl delete pod web-6d4cf56db6-abcde
+kubectl get pods -l app=web
+</code></pre></div>
+      <p>Use a real Pod name from your own output. Almost at once there are three Pods again, one of them brand new. The ReplicaSet saw two where it wanted three, and made another. In chapter 6 the same <code>delete</code> was permanent. The difference is that something owns the Pod now.</p>
+
+      <h2>Scaling</h2>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl scale deployment web --replicas=5
+kubectl scale deployment web --replicas=2
+kubectl apply -f web-deploy.yaml
+</code></pre></div>
+      <ul>
+        <li>The first two change the replica count straight away. Quick, but they leave your file saying <code>3</code>.</li>
+        <li>The third is the clean way: edit <code>replicas</code> in the file and apply it. The file stays the truth.</li>
+      </ul>
+      <p>Scaling does not create a new ReplicaSet and does not count as a rollout. Only a change to the Pod <code>template</code> does.</p>
+
+      <h2>Rolling updates</h2>
+      <p>Change the image and apply. Or do it in one line:</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl set image deployment/web nginx=nginx:1.28
+kubectl rollout status deployment/web
+kubectl get replicaset
+</code></pre></div>
+      <ul>
+        <li><code>set image deployment/web nginx=nginx:1.28</code> reads as: in the Deployment <code>web</code>, the container named <code>nginx</code> gets image <code>nginx:1.28</code>. The part before <code>=</code> is the <strong>container name</strong>, not the image.</li>
+        <li><code>rollout status</code> waits and prints progress until the rollout finishes or fails. Handy in scripts: its exit code tells you if it worked.</li>
+        <li><code>get replicaset</code> now shows two. The new one has the Pods. The old one is kept at zero Pods, ready for rollback.</li>
+      </ul>
+
+      <h3>What the Deployment actually does</h3>
+      <p>It never kills everything and starts again. It moves Pods across, a few at a time. Two numbers control the pace:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Setting</th><th>Means</th><th>Default</th></tr></thead>
+        <tbody>
+          <tr><td><code>maxSurge</code></td><td>How many <em>extra</em> Pods above the desired count are allowed during the update.</td><td>25%, rounded up</td></tr>
+          <tr><td><code>maxUnavailable</code></td><td>How many Pods may be <em>unavailable</em> at the same time.</td><td>25%, rounded down</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="code" data-lang="yaml"><pre><code>
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+</code></pre></div>
+
+      <p>With 3 replicas, <code>maxSurge: 1</code> and <code>maxUnavailable: 0</code>, the update goes like this. "Ready" is the key word: a new Pod only counts once it is ready for traffic.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Step</th><th>Old ReplicaSet</th><th>New ReplicaSet</th><th>What happened</th></tr></thead>
+        <tbody>
+          <tr><td>0</td><td>3</td><td>0</td><td>Start</td></tr>
+          <tr><td>1</td><td>3</td><td>1</td><td>One extra Pod starts (the surge). Total is 4. Nothing old has been touched.</td></tr>
+          <tr><td>2</td><td>2</td><td>1</td><td>The new Pod is ready, so one old Pod is removed.</td></tr>
+          <tr><td>3</td><td>2</td><td>2</td><td>Another new Pod starts.</td></tr>
+          <tr><td>4</td><td>1</td><td>2</td><td>It becomes ready, another old Pod goes.</td></tr>
+          <tr><td>5</td><td>1</td><td>3</td><td>Last new Pod starts.</td></tr>
+          <tr><td>6</td><td>0</td><td>3</td><td>Ready. The old ReplicaSet is left at 0.</td></tr>
+        </tbody>
+      </table></div>
+
+      <p>At no point are fewer than three Pods ready. That is a zero-downtime update. With the defaults on 3 replicas (surge 25% rounds up to 1, unavailable 25% rounds down to 0) you get exactly this behaviour.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>"Ready" is decided by a <strong>readiness probe</strong> (chapter 13). If you have none, a Pod counts as ready the moment its container starts. The rollout then races ahead and can send traffic to an app that is still booting, and your zero-downtime update has downtime in it.</p>
+      </div>
+
+      <h3>The other strategy</h3>
+      <div class="code" data-lang="yaml"><pre><code>
+spec:
+  strategy:
+    type: Recreate
+</code></pre></div>
+      <p><code>Recreate</code> kills every old Pod, then starts the new ones. There is an outage. Use it only when two versions cannot run side by side, for example an app that locks a database schema.</p>
+
+      <h2>Rollbacks</h2>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl rollout history deployment/web
+kubectl rollout undo deployment/web
+kubectl rollout undo deployment/web --to-revision=1
+kubectl rollout restart deployment/web
+</code></pre></div>
+      <ul>
+        <li><code>history</code> lists revisions. Each template change is one revision.</li>
+        <li><code>undo</code> goes back one revision. It does it as a normal rolling update, so users do not see a break.</li>
+        <li><code>--to-revision=1</code> goes back to a specific one.</li>
+        <li><code>restart</code> triggers a fresh rolling update with <em>no</em> template change. Use it to pick up a changed ConfigMap or to cycle Pods gently.</li>
+      </ul>
+      <p>Undo works because the old ReplicaSet is still there, scaled to zero. Kubernetes keeps the last <code>revisionHistoryLimit</code> of them, <strong>10</strong> by default. Set it to <code>0</code> and you give up rollbacks.</p>
+      <p>History shows revision numbers but not why. Add the reason yourself:</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl annotate deployment/web kubernetes.io/change-cause="bump nginx to 1.28"
+</code></pre></div>
+      <p>The text then appears in the <code>CHANGE-CAUSE</code> column of <code>rollout history</code>.</p>
+
+      <h3>When a rollout gets stuck</h3>
+      <p>Say you push an image tag that does not exist. The new Pod sits in <code>ImagePullBackOff</code>. The Deployment keeps the old Pods running, because <code>maxUnavailable: 0</code> forbids removing them until the new one is ready. Your users keep being served by the old version. The rollout simply waits.</p>
+      <p>After <code>progressDeadlineSeconds</code> (600 by default, ten minutes) the Deployment marks itself <code>Progressing=False</code> with reason <code>ProgressDeadlineExceeded</code>. That is a <strong>label, not an action</strong>. It does not roll back. You do that.</p>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li>A Deployment is <code>Restart=always</code> in a systemd unit, grown up. systemd keeps one process of one service alive on one machine. A Deployment keeps N copies alive across many machines, and picks a new machine when one fails.</li>
+        <li><code>kubectl rollout restart</code> is <code>systemctl restart</code> done gently: one copy at a time, behind a load balancer, so the service never goes fully down. It is closer to <code>systemctl reload</code> in spirit than <code>restart</code>.</li>
+        <li><code>kubectl rollout undo</code> is the "have a rollback plan before you upgrade" advice from the package-management chapter, built in. The old version is not deleted, only set aside.</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Labels in the template do not match the selector.</strong> The API server rejects it with an error saying the selector does not match the template labels. They must agree. Copy the same <code>app: web</code> into both.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Trying to change <code>spec.selector</code> on a live Deployment.</strong> It is immutable in <code>apps/v1</code>. You get <code>field is immutable</code>. Decide your selector before the first apply. To change it you must delete and recreate the Deployment.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"I pushed a new image to <code>myapp:latest</code>, so my Deployment will update."</strong> It will not. The template did not change, so there is no rollout. Use a unique tag per build (a version or a git SHA), then change the tag in the template. Or run <code>kubectl rollout restart</code>, and know that the pull policy for <code>:latest</code> will pull again.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Editing a Pod or a ReplicaSet by hand.</strong> The controller above it will change it back, or recreate it. Change the Deployment. That is the only place your edit survives.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"A failed rollout rolls back by itself."</strong> It does not. The Deployment stops making progress and reports it. If you want automatic rollback, that is the job of your CI/CD tool or something like Argo Rollouts or Flagger.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"<code>rollout undo</code> restores my replica count."</strong> It restores the Pod <em>template</em> of an older revision. The replica count stays whatever it is now.</p>
+      </div>
+
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p><code>kubectl delete deployment web</code> deletes the Deployment, its ReplicaSets <strong>and every Pod</strong>. For a service people are using, that is an outage. Scale to zero first only if you mean it, and prefer <code>rollout undo</code> to deleting.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>Use the kind cluster from chapter 4. Work in a scratch namespace so cleanup is one command. Open a second terminal and run <code>kubectl get pods -n dev --watch</code> to see every step as it happens.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+# 1. set up
+kubectl create namespace dev
+kubectl apply -n dev -f web-deploy.yaml
+kubectl rollout status deployment/web -n dev
+kubectl get deployment,replicaset,pods -n dev
+
+# 2. self-healing: delete one Pod (use a real name)
+kubectl get pods -n dev
+kubectl delete pod -n dev &lt;one-of-the-web-pods&gt;
+
+# 3. scale
+kubectl scale deployment web -n dev --replicas=5
+kubectl get pods -n dev
+
+# 4. a good rolling update
+kubectl set image deployment/web nginx=nginx:1.28 -n dev
+kubectl rollout status deployment/web -n dev
+kubectl get replicaset -n dev
+kubectl rollout history deployment/web -n dev
+
+# 5. a bad one: an image tag that does not exist
+kubectl set image deployment/web nginx=nginx:does-not-exist -n dev
+kubectl rollout status deployment/web -n dev --timeout=30s
+kubectl get pods -n dev
+kubectl describe deployment web -n dev | tail -20
+
+# 6. roll back
+kubectl rollout undo deployment/web -n dev
+kubectl rollout status deployment/web -n dev
+
+# 7. clean up
+kubectl delete namespace dev
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>Step 2: a new Pod appears within seconds, and its age is small.</li>
+        <li>Step 4: <code>get replicaset</code> lists two ReplicaSets. The old one shows <code>0</code> desired. Your <code>--watch</code> window shows new Pods starting before old ones terminate.</li>
+        <li>Step 5: the new Pod is stuck on <code>ErrImagePull</code> / <code>ImagePullBackOff</code>, but most old Pods are still <code>Running</code>. With 5 replicas and the default 25% <code>maxUnavailable</code>, the Deployment may take away one old Pod, no more. <code>rollout status</code> times out. Service carries on.</li>
+        <li>Step 6: the stuck Pod goes away and the Deployment is healthy again.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>What's the relationship between a Deployment, a ReplicaSet and a Pod?</summary>
+          <div class="answer">
+            <p>A Deployment owns ReplicaSets, and a ReplicaSet owns Pods. The Deployment holds the desired replica count and the Pod template and handles updates and rollbacks. Each version of the template gets its own ReplicaSet, whose only job is to keep the right number of Pods running. In practice I only write the Deployment. Each layer is a controller doing a reconcile loop on the layer below it.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How does a rolling update work?</summary>
+          <div class="answer">
+            <p>When I change the Pod template, the Deployment creates a new ReplicaSet and gradually shifts Pods from old to new. Two settings control the pace. <code>maxSurge</code> is how many extra Pods are allowed above the desired count. <code>maxUnavailable</code> is how many can be unavailable at once. It starts a new Pod, waits for it to be ready, removes an old one, and repeats. That's why readiness probes matter. Without one, Kubernetes treats a Pod as ready the moment its container starts.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What triggers a rollout, and what doesn't?</summary>
+          <div class="answer">
+            <p>Any change to <code>spec.template</code>: the image, environment variables, labels, resource requests. That creates a new ReplicaSet. Scaling changes <code>replicas</code>, not the template, so it doesn't trigger a rollout. Pushing a new image under the same tag doesn't either, because the template text is unchanged. That's why I use unique tags.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>A rollout is stuck with new Pods failing. What happens, and how do you recover?</summary>
+          <div class="answer">
+            <p>The old Pods keep serving, as long as <code>maxUnavailable</code> doesn't let the Deployment remove them first, so there's usually no outage. After the progress deadline, ten minutes by default, the Deployment reports <code>ProgressDeadlineExceeded</code>, but it doesn't roll back by itself. I'd run <code>kubectl rollout undo</code> to go back, then look at <code>describe</code> and the logs of the failing Pod to find out why it failed.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What does <code>kubectl rollout undo</code> actually restore?</summary>
+          <div class="answer">
+            <p>It restores the Pod template from an earlier revision, by scaling the old ReplicaSet back up and the current one down, using the normal rolling update. It works because the Deployment keeps old ReplicaSets, up to <code>revisionHistoryLimit</code>, which defaults to 10. It doesn't change the replica count, and it can't help if I've set the history limit to zero.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Use a Deployment</strong>, not a bare Pod, for anything that should stay up. <strong>Tag</strong> every image with something unique. <strong>Add</strong> a readiness probe so a rolling update waits for real readiness. <strong>Run</strong> <code>rollout status</code> after every apply in a pipeline. <strong>Keep</strong> the file in git and change the file, not the live object. And know your way out: <code>rollout history</code>, then <code>rollout undo</code>.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
