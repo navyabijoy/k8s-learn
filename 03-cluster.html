@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What a cluster is · Kubernetes Handbook</title>
+<meta name="description" content="You have run a Pod. Now the questions start. Who picked the node? Who pulled the image? Who restarts it? This chapter names every part of a cluster and says what each one does, in the order they act w">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="3">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>What a cluster is</h1>
+            <p class="sub">Control plane, nodes, and who does what</p>
+          </div>
+          <span class="pill">Section 03</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">You have run a Pod. Now the questions start. Who picked the node? Who pulled the image? Who restarts it? This chapter names every part of a cluster and says what each one does, in the order they act when you run <code>kubectl apply</code>.</p>
+
+      <h2>The problem</h2>
+      <p>Imagine you have ten Linux servers. You want to run an app three times, spread over them, and keep three copies running even when a server dies.</p>
+      <p>By hand, that means: pick servers, start the app on each, watch them, notice a dead one, start a replacement somewhere else. You would write scripts for it. Then scripts to run the scripts.</p>
+      <p>A <strong>cluster</strong> is that job, done by software. You say "I want three copies". The cluster works out where, starts them, and keeps checking.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>A cluster is a <strong>control plane</strong> that decides and <strong>nodes</strong> that do. You never talk to a node to run something. You write what you want to the control plane, and it makes the nodes match.</p>
+      </div>
+
+      <div class="cards">
+        <div class="card"><span class="tag">Control plane</span><p>The decision makers. They keep the list of what should exist and notice when reality differs. They do not run your app (in most real clusters).</p></div>
+        <div class="card"><span class="tag">Node</span><p>A machine (physical or virtual) that runs Pods. Each node is an ordinary Linux machine with a few Kubernetes programs on it.</p></div>
+        <div class="card"><span class="tag">Desired state</span><p>What you asked for: "3 copies of web". It lives in the cluster's database.</p></div>
+        <div class="card"><span class="tag">Actual state</span><p>What exists right now: two copies running, one missing. Kubernetes keeps comparing the two and closing the gap.</p></div>
+      </div>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 760 420" role="img" aria-labelledby="c3-t c3-d">
+          <title id="c3-t">Control plane and nodes</title>
+          <desc id="c3-d">kubectl talks to the API server in the control plane. The API server reads and writes etcd. The scheduler and controller manager talk to the API server. Each node has a kubelet and a container runtime that talk to the API server and run Pods.</desc>
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/>
+            </marker>
+          </defs>
+
+          <rect class="box-svc" x="14" y="168" width="106" height="56" rx="10"/>
+          <text class="t t-b" x="67" y="193" text-anchor="middle">you</text>
+          <text class="t-mono" x="67" y="212" text-anchor="middle">kubectl</text>
+
+          <rect class="box-cp" x="160" y="14" width="300" height="392" rx="14"/>
+          <text class="t t-b" x="180" y="40">Control plane</text>
+
+          <rect class="box-in-cp" x="240" y="58" width="140" height="50" rx="8"/>
+          <text class="t t-b" x="310" y="79" text-anchor="middle">etcd</text>
+          <text class="t-sm" x="310" y="97" text-anchor="middle">the database</text>
+
+          <rect class="box-in-cp" x="196" y="168" width="228" height="56" rx="8"/>
+          <text class="t t-b" x="310" y="192" text-anchor="middle">kube-apiserver</text>
+          <text class="t-sm" x="310" y="211" text-anchor="middle">the front door for everything</text>
+
+          <rect class="box-in-cp" x="180" y="304" width="124" height="62" rx="8"/>
+          <text class="t t-b" x="242" y="330" text-anchor="middle">scheduler</text>
+          <text class="t-sm" x="242" y="349" text-anchor="middle">picks a node</text>
+
+          <rect class="box-in-cp" x="316" y="304" width="124" height="62" rx="8"/>
+          <text class="t t-b" x="378" y="326" text-anchor="middle">controller</text>
+          <text class="t t-b" x="378" y="342" text-anchor="middle">manager</text>
+          <text class="t-sm" x="378" y="358" text-anchor="middle">fixes the gap</text>
+
+          <line class="arrow" x1="122" y1="196" x2="194" y2="196"/>
+          <line class="arrow" x1="310" y1="166" x2="310" y2="110"/>
+          <line class="arrow" x1="246" y1="302" x2="262" y2="226"/>
+          <line class="arrow" x1="374" y1="302" x2="358" y2="226"/>
+
+          <rect class="box-node" x="520" y="14" width="226" height="184" rx="14"/>
+          <text class="t t-b" x="538" y="40">Node 1</text>
+          <rect class="box-in-node" x="538" y="56" width="92" height="44" rx="8"/>
+          <text class="t t-b" x="584" y="83" text-anchor="middle">kubelet</text>
+          <rect class="box-in-node" x="640" y="56" width="92" height="44" rx="8"/>
+          <text class="t t-b" x="686" y="83" text-anchor="middle">runtime</text>
+          <rect class="box-pod-solid" x="538" y="120" width="92" height="56" rx="8"/>
+          <text class="t t-b" x="584" y="153" text-anchor="middle">Pod</text>
+          <rect class="box-pod-solid" x="640" y="120" width="92" height="56" rx="8"/>
+          <text class="t t-b" x="686" y="153" text-anchor="middle">Pod</text>
+
+          <rect class="box-node" x="520" y="222" width="226" height="184" rx="14"/>
+          <text class="t t-b" x="538" y="248">Node 2</text>
+          <rect class="box-in-node" x="538" y="264" width="92" height="44" rx="8"/>
+          <text class="t t-b" x="584" y="291" text-anchor="middle">kubelet</text>
+          <rect class="box-in-node" x="640" y="264" width="92" height="44" rx="8"/>
+          <text class="t t-b" x="686" y="291" text-anchor="middle">runtime</text>
+          <rect class="box-pod-solid" x="538" y="328" width="92" height="56" rx="8"/>
+          <text class="t t-b" x="584" y="361" text-anchor="middle">Pod</text>
+          <rect class="box-pod-solid" x="640" y="328" width="92" height="56" rx="8"/>
+          <text class="t t-b" x="686" y="361" text-anchor="middle">Pod</text>
+
+          <line class="arrow" x1="536" y1="78" x2="426" y2="178"/>
+          <line class="arrow" x1="536" y1="286" x2="426" y2="214"/>
+          <text class="t-sm" x="486" y="124" text-anchor="middle">watch</text>
+          <text class="t-sm" x="486" y="140" text-anchor="middle">+ report</text>
+        </svg>
+        <figcaption>Everything goes through the API server. The scheduler, the controllers and every kubelet talk to it. Only it talks to etcd.</figcaption>
+      </figure>
+
+      <h2>The parts, in plain words</h2>
+      <p>Think of a restaurant. Orders come in at the front desk. They are written in one order book. A manager checks the book against the kitchens. Each kitchen has a chef who cooks what the book says.</p>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th>Part</th><th>Where</th><th>Restaurant</th><th>What it really does</th></tr></thead>
+        <tbody>
+          <tr><td><code>kube-apiserver</code></td><td>control plane</td><td>front desk</td><td>Serves the Kubernetes HTTP API. Every request goes through it: yours, the scheduler's, the kubelets'. It checks who you are, whether you are allowed, and whether the request is valid.</td></tr>
+          <tr><td><code>etcd</code></td><td>control plane</td><td>the order book</td><td>A key-value store holding all cluster data. Only the API server talks to it.</td></tr>
+          <tr><td><code>kube-scheduler</code></td><td>control plane</td><td>who gets which table</td><td>Finds Pods with no node yet and picks a suitable node for each.</td></tr>
+          <tr><td><code>kube-controller-manager</code></td><td>control plane</td><td>the managers</td><td>Runs many controllers. Each one compares desired state with actual state for one kind of thing and acts on the difference.</td></tr>
+          <tr><td><code>cloud-controller-manager</code></td><td>control plane (optional)</td><td>the supplier</td><td>Connects the cluster to a cloud provider: load balancers, node lifecycle. Not present on a laptop.</td></tr>
+          <tr><td><code>kubelet</code></td><td>every node</td><td>the chef</td><td>Makes sure the Pods assigned to its node are running, and reports back.</td></tr>
+          <tr><td>container runtime</td><td>every node</td><td>the stove</td><td>Starts and stops containers. Usually containerd or CRI-O. The kubelet talks to it through the Container Runtime Interface (CRI).</td></tr>
+          <tr><td><code>kube-proxy</code></td><td>every node (optional)</td><td>the waiter's map</td><td>Programs network rules so a Service address reaches its Pods. Some network plugins replace it. Chapter 9.</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>The parts do not call each other. They all talk to the API server, and they <strong>watch</strong> it for changes. The scheduler does not tell the kubelet to start a Pod. It writes "this Pod goes to node 2" into the API, and the kubelet on node 2 sees that and acts.</p>
+      </div>
+
+      <h2>What happens when you run <code>kubectl apply</code></h2>
+      <p>You write a Deployment that asks for three copies of <code>web</code>. Follow it through:</p>
+
+      <ol>
+        <li><strong><code>kubectl</code> sends it to the API server.</strong> The API server checks who you are, whether you may create Deployments, and whether the YAML makes sense.</li>
+        <li><strong>The API server stores it in etcd.</strong> Now the cluster "knows" you want three copies. Nothing is running yet.</li>
+        <li><strong>The Deployment controller</strong> (inside the controller manager) sees the new Deployment. It creates a ReplicaSet. The ReplicaSet controller sees that, and creates three Pod objects. Still nothing is running. These are records.</li>
+        <li><strong>The scheduler</strong> sees three Pods with no node. For each, it picks a node and writes that into the Pod.</li>
+        <li><strong>The kubelet</strong> on each chosen node sees a Pod assigned to it. It asks the container runtime to pull the image and start the containers.</li>
+        <li><strong>The kubelet reports back.</strong> Status goes to the API server, then into etcd. Now <code>kubectl get pods</code> shows <code>Running</code>.</li>
+      </ol>
+
+      <div class="flow"><span>kubectl</span><i>→</i><span>API server</span><i>→</i><span>etcd</span><i>→</i><span>controllers create Pods</span><i>→</i><span>scheduler picks a node</span><i>→</i><span>kubelet starts containers</span></div>
+
+      <p>Nothing in that list is magic. It is a chain of programs, each doing one small job, each reading and writing the same API.</p>
+
+      <h3>Desired state, actual state, and the loop</h3>
+      <p>Every controller runs the same loop, forever:</p>
+      <div class="flow"><span>Look at desired state</span><i>→</i><span>Look at actual state</span><i>→</i><span>Different?</span><i>→</i><span>Act to close the gap</span><i>→</i><span>Repeat</span></div>
+      <p>That is called <strong>reconciling</strong>. It is why a deleted Pod owned by a Deployment comes back: the ReplicaSet controller sees two copies where it wants three and makes one more. Chapter 19 shows you how to write your own.</p>
+
+      <h2>Look at a real cluster</h2>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get nodes
+kubectl get nodes -o wide
+kubectl get pods -n kube-system
+</code></pre></div>
+      <ul>
+        <li><code>get nodes</code> lists the machines and whether they are <code>Ready</code>. The <code>ROLES</code> column marks the control-plane node.</li>
+        <li><code>-o wide</code> adds the OS image, kernel version and container runtime of each node. This is where you find out which runtime you have.</li>
+        <li><code>get pods -n kube-system</code> shows the cluster's own Pods. <code>-n</code> picks a namespace (chapter 8). Look for <code>kube-apiserver-…</code>, <code>etcd-…</code>, <code>kube-scheduler-…</code>, <code>kube-controller-manager-…</code>, <code>coredns-…</code>.</li>
+      </ul>
+
+      <p>To ask the API server whether it is healthy:</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl cluster-info
+kubectl get --raw='/readyz?verbose'
+kubectl get --raw='/livez'
+</code></pre></div>
+      <ul>
+        <li><code>cluster-info</code> prints the API server address and the DNS service.</li>
+        <li><code>/readyz?verbose</code> lists every internal check with <code>ok</code> or <code>failed</code>. Use it when the API feels slow or wrong.</li>
+        <li><code>/livez</code> is the shorter "is the process alive" answer.</li>
+      </ul>
+
+      <h2>Linux you already know</h2>
+      <p>None of these parts is a new kind of thing. They are Linux programs.</p>
+      <ul>
+        <li>The <strong>kubelet</strong> is a <strong>systemd service</strong> on each node. On a node you can run <code>systemctl status kubelet</code> and <code>journalctl -u kubelet</code>, exactly like <code>nginx</code> in the Linux handbook. If the kubelet stops, that node stops reporting.</li>
+        <li>On clusters built with kubeadm, the API server, scheduler, controller manager and etcd run as <strong>static Pods</strong>. The kubelet starts them from YAML files in <code>/etc/kubernetes/manifests</code>. Drop a file there and a Pod appears. Delete it and the Pod goes. The kubelet is the thing watching that folder.</li>
+        <li><strong>etcd</strong> keeps its data on disk, by default under <code>/var/lib/etcd</code>. It is a database, so you back it up like one.</li>
+        <li>A <strong>node</strong> is a Linux machine. <code>ps aux | grep kube</code> works on it. <code>top</code> shows what is eating its CPU.</li>
+        <li>The <strong>container runtime</strong> uses the kernel's namespaces and cgroups from the last chapter. Kubernetes does not run containers itself.</li>
+      </ul>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>If you can troubleshoot a Linux service, you can troubleshoot a cluster. "Is the process running? What do its logs say? What is it waiting for?" is the same path.</p>
+      </div>
+
+      <h2>How big is a real cluster?</h2>
+      <ul>
+        <li><strong>A laptop cluster</strong> often has one node doing both jobs. Fine for learning.</li>
+        <li><strong>A real cluster</strong> runs <strong>three</strong> control-plane nodes (sometimes five) and any number of worker nodes. Three, because etcd needs a majority (a <strong>quorum</strong>) to accept writes. With three members, one can fail. With five, two can. An even number buys you nothing: four members still tolerate only one failure, because a majority of four is three.</li>
+        <li>On a normal cluster the control-plane nodes are <strong>tainted</strong> so your Pods do not land on them (chapter 15).</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"The API server stores my data."</strong> It does not. It is stateless. It reads and writes etcd. You can run several API servers behind a load balancer for exactly that reason.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"etcd stores my app's data."</strong> It stores the <em>cluster's</em> data: objects like Pods, Deployments and Secrets. Your database's rows live on your own volumes (chapter 12).</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"If the control plane goes down, my apps go down."</strong> Not straight away. Running Pods keep running, because the kubelets already have their instructions and the node networking is already set up. What stops is change: no new Pods, no rescheduling, no scaling, no self-healing of anything that fails after that.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"The scheduler starts Pods."</strong> It only chooses a node. The kubelet starts the Pod.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"Use <code>kubectl get componentstatuses</code> to check health."</strong> It has been deprecated for years and is unreliable. Use <code>/readyz?verbose</code> instead.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"The 'master' node."</strong> Old name. Say <strong>control plane</strong> (or control-plane node). Interviewers notice.</p>
+      </div>
+
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p>etcd holds every Secret and the entire desired state of the cluster. Lose it with no backup and the cluster forgets everything it was running. Back it up, and treat the backup like a password file.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>You need a cluster. If you do not have one yet, do chapter 4 first and come back. With a kind cluster named <code>handbook</code>, the node container is called <code>handbook-control-plane</code>, and you can look inside it like a Linux machine.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+# 1. which machines are in the cluster, and what runtime do they use?
+kubectl get nodes -o wide
+
+# 2. the cluster's own Pods
+kubectl get pods -n kube-system -o wide
+
+# 3. ask the API server about its health
+kubectl get --raw='/readyz?verbose'
+
+# 4. look at the node as a Linux machine (kind runs each node as a Docker container)
+docker exec -it handbook-control-plane bash
+ps aux | grep -E "kube|etcd|containerd" | head
+systemctl status kubelet --no-pager
+ls /etc/kubernetes/manifests
+exit
+
+# 5. watch the chain from the section above in action, in a second terminal
+kubectl get events --watch
+# back in the first terminal:
+kubectl create deployment hello --image=nginx:1.27 --replicas=2
+# when you are done:
+kubectl delete deployment hello
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>In step 4, the four control-plane programs run as processes on the node, and the manifests folder holds their YAML.</li>
+        <li>In step 5, events appear in the order from this chapter: the Deployment scales a ReplicaSet, the ReplicaSet creates Pods, the scheduler assigns them, the kubelet pulls and starts. Note the <code>From</code> column. It tells you which component wrote each line.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>Walk me through what happens when I run <code>kubectl apply</code> on a Deployment.</summary>
+          <div class="answer">
+            <p>kubectl sends the YAML to the API server. The API server authenticates me, checks I'm allowed, validates the object, and writes it into etcd. The Deployment controller notices a new Deployment and creates a ReplicaSet, and the ReplicaSet controller creates the Pod objects. At that point they're just records with no node. The scheduler sees Pods with no node and assigns each one. The kubelet on each chosen node sees a Pod bound to it, tells the container runtime to pull the image and start the containers, and reports status back through the API server. Every step goes through the API server. Components watch it; they don't call each other.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What's in the control plane and what's on a worker node?</summary>
+          <div class="answer">
+            <p>The control plane has the API server, etcd, the scheduler and the controller manager, plus the cloud controller manager if you're on a cloud. Worker nodes have the kubelet, a container runtime like containerd, and usually kube-proxy for Service networking. The control plane decides. The nodes run Pods.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Why does only the API server talk to etcd?</summary>
+          <div class="answer">
+            <p>It gives one place to enforce authentication, authorization, validation and admission, and one place that understands the data format. If every component wrote to etcd directly, none of that would be consistent, and you couldn't change the storage later without touching everything. It also means the API server itself is stateless, so I can run several behind a load balancer.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>The control plane goes down. What happens to my running apps?</summary>
+          <div class="answer">
+            <p>They keep running. The kubelets already have their Pods, and the network rules on the nodes are already in place, so traffic keeps flowing. What I lose is change. No new Pods get scheduled, nothing scales, a Pod that crashes after the outage won't be replaced by a controller, and kubectl stops working. The kubelet will still restart a crashed container on its own node, since that's local. So it's degraded, not dead.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Why run three etcd members and not four?</summary>
+          <div class="answer">
+            <p>etcd needs a majority to accept writes. With three members the majority is two, so I can lose one. With four the majority is three, so I can still only lose one. The fourth member adds cost and one more thing that can fail, without adding tolerance. Five tolerates two failures. So odd numbers: three for most clusters, five for bigger or more critical ones.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Say "control plane"</strong>, not "master". <strong>Ask "who wrote this?"</strong> when you read events: the scheduler, a controller and the kubelet each point to a different problem. <strong>Remember</strong> that everything goes through the API server. <strong>Back up</strong> etcd. And when something feels mysterious, treat the node like any Linux machine: process, logs, what is it waiting for.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

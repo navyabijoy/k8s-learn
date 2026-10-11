@@ -276,6 +276,9 @@ svg .box-pod { fill: var(--d-pod); stroke: var(--d-pod-line); stroke-width: 2; s
 svg .box-ctr { fill: var(--d-ctr); stroke: var(--d-pod-line); stroke-width: 1.5; }
 svg .box-svc { fill: var(--d-svc); stroke: var(--d-svc-line); stroke-width: 2; }
 svg .box-ext { fill: var(--d-ext); stroke: var(--d-ext-line); stroke-width: 2; }
+svg .box-in-cp { fill: var(--surface); stroke: var(--d-cp-line); stroke-width: 2; }
+svg .box-in-node { fill: var(--surface); stroke: var(--d-node-line); stroke-width: 2; }
+svg .box-pod-solid { fill: var(--d-pod); stroke: var(--d-pod-line); stroke-width: 2; }
 svg .vol { fill: var(--d-cp); stroke: var(--d-cp-line); stroke-width: 1.5; }
 svg .arrow { stroke: var(--muted); stroke-width: 2; fill: none; marker-end: url(#ah); }
 
