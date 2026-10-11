@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ingress · Kubernetes Handbook</title>
+<meta name="description" content="A Service gives your app a stable address inside the cluster. The outside world needs something smarter: one entry point that reads the hostname and URL and sends each request to the right Service. Th">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="10">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Ingress</h1>
+            <p class="sub">Getting traffic from outside the cluster to a Service</p>
+          </div>
+          <span class="pill">Section 10</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">A Service gives your app a stable address inside the cluster. The outside world needs something smarter: one entry point that reads the hostname and URL and sends each request to the right Service. That is what Ingress was made for, and what Gateway API is now replacing. You need to understand both, because the interviewer's cluster may well have either.</p>
+
+      <h2>The problem</h2>
+      <p>You have three apps: a website, an API, and an admin page. Each has a Service. How do users reach them?</p>
+      <ul>
+        <li>A <code>LoadBalancer</code> Service per app works, but on a cloud that is three load balancers, three public IPs and three bills.</li>
+        <li>A <code>NodePort</code> per app gives you ports like <code>31842</code>. Nobody types that.</li>
+        <li>Neither knows about <code>shop.example.com</code>, about <code>/api</code>, or about HTTPS certificates.</li>
+      </ul>
+      <p>You want <strong>one</strong> public entry point that understands HTTP: "requests for <code>shop.example.com/api</code> go to the API Service, everything else goes to the website", with TLS handled once at the door.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>An <strong>Ingress</strong> is a set of routing rules. An <strong>Ingress controller</strong> is the program that reads them and does the routing. Kubernetes ships the rules object, <strong>not</strong> a controller. Without a controller, an Ingress does nothing at all.</p>
+      </div>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 760 340" role="img" aria-labelledby="i10-t i10-d">
+          <title id="i10-t">Ingress to Service to Pod</title>
+          <desc id="i10-d">A client sends a request through a load balancer to the Ingress controller. The controller reads the Ingress rules, and sends slash to the web Service and slash api to the api Service, each of which reaches its Pods.</desc>
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/>
+            </marker>
+          </defs>
+          <rect class="box-ext" x="10" y="115" width="100" height="76" rx="10"/>
+          <text class="t t-b" x="60" y="146" text-anchor="middle">client</text>
+          <text class="t-sm" x="60" y="166" text-anchor="middle">shop.example.com</text>
+
+          <rect class="box-svc" x="138" y="115" width="104" height="76" rx="10"/>
+          <text class="t t-b" x="190" y="142" text-anchor="middle">entry point</text>
+          <text class="t-sm" x="190" y="162" text-anchor="middle">load balancer</text>
+          <text class="t-sm" x="190" y="178" text-anchor="middle">or node port</text>
+
+          <rect class="box-cp" x="272" y="50" width="196" height="200" rx="12"/>
+          <text class="t t-b" x="370" y="78" text-anchor="middle">Ingress controller</text>
+          <text class="t-sm" x="370" y="98" text-anchor="middle">(a proxy running in Pods)</text>
+          <text class="t-mono" x="370" y="140" text-anchor="middle">/      → web</text>
+          <text class="t-mono" x="370" y="164" text-anchor="middle">/api   → api</text>
+          <text class="t-sm" x="370" y="206" text-anchor="middle">TLS ends here</text>
+
+          <rect x="272" y="278" width="196" height="46" rx="10" fill="none" stroke="var(--d-cp-line)" stroke-width="2" stroke-dasharray="6 4"/>
+          <text class="t t-b" x="370" y="298" text-anchor="middle">Ingress object</text>
+          <text class="t-sm" x="370" y="315" text-anchor="middle">the rules, as YAML</text>
+          <line class="arrow" x1="370" y1="276" x2="370" y2="252"/>
+          <text class="t-sm" x="402" y="268">watches</text>
+
+          <rect class="box-svc" x="516" y="44" width="110" height="64" rx="10"/>
+          <text class="t t-b" x="571" y="72" text-anchor="middle">Service</text>
+          <text class="t-mono" x="571" y="92" text-anchor="middle">web</text>
+          <rect class="box-svc" x="516" y="160" width="110" height="64" rx="10"/>
+          <text class="t t-b" x="571" y="188" text-anchor="middle">Service</text>
+          <text class="t-mono" x="571" y="208" text-anchor="middle">api</text>
+
+          <rect class="box-pod-solid" x="660" y="44" width="86" height="64" rx="10"/>
+          <text class="t t-b" x="703" y="82" text-anchor="middle">Pods</text>
+          <rect class="box-pod-solid" x="660" y="160" width="86" height="64" rx="10"/>
+          <text class="t t-b" x="703" y="198" text-anchor="middle">Pods</text>
+
+          <line class="arrow" x1="112" y1="153" x2="136" y2="153"/>
+          <line class="arrow" x1="244" y1="153" x2="270" y2="153"/>
+          <line class="arrow" x1="470" y1="130" x2="514" y2="80"/>
+          <line class="arrow" x1="470" y1="176" x2="514" y2="190"/>
+          <line class="arrow" x1="628" y1="76" x2="658" y2="76"/>
+          <line class="arrow" x1="628" y1="192" x2="658" y2="192"/>
+        </svg>
+        <figcaption>One entry point, many Services. The controller reads the rules and proxies each request.</figcaption>
+      </figure>
+
+      <div class="callout danger">
+        <span class="label">Check this first: the state of Ingress today</span>
+        <p>Two facts you must be able to say in an interview. <strong>First</strong>, the Ingress API is <strong>frozen</strong>: stable since Kubernetes 1.19, with no plans to remove it, but no further development. The Kubernetes project now recommends the <strong>Gateway API</strong> for new work. <strong>Second</strong>, <strong>ingress-nginx</strong>, the most widely used controller, was <strong>retired in March 2026</strong>: no more releases, bug fixes or security patches. Existing installs keep running, but the project says to migrate, and notes that no alternative is a drop-in replacement. Ingress is still everywhere in existing clusters, so you need to read it. New designs should use Gateway API.</p>
+      </div>
+
+      <h2>Your first Ingress</h2>
+      <div class="code" data-lang="yaml" data-file="shop-ingress.yaml"><pre><code>
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop
+spec:
+  ingressClassName: example
+  rules:
+    - host: shop.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 80
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80
+</code></pre></div>
+
+      <div class="code" data-lang="tree"><pre><code>
+spec:
+  ingressClassName: example     which controller should handle this Ingress
+  rules:
+    - host: shop.example.com    only for this hostname (leave out to match any)
+      http:
+        paths:
+          - path: /api          if the URL path starts with /api ...
+            pathType: Prefix    ... how to match (see below)
+            backend:
+              service:
+                name: api       ... send to the Service named api
+                port:
+                  number: 80    ... on this Service port
+</code></pre></div>
+
+      <p>Both the host <em>and</em> the path must match before the controller sends the request to that Service. The backend is a <strong>Service</strong>, not a Pod: this is why chapter 9 comes first.</p>
+
+      <h3>Path types</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th><code>pathType</code></th><th>Matches</th></tr></thead>
+        <tbody>
+          <tr><td><code>Exact</code></td><td>only that exact path. <code>/api</code> matches <code>/api</code>, not <code>/api/users</code>.</td></tr>
+          <tr><td><code>Prefix</code></td><td>that path and everything under it, split on <code>/</code>. <code>/api</code> matches <code>/api</code> and <code>/api/users</code>, but not <code>/apiary</code>.</td></tr>
+          <tr><td><code>ImplementationSpecific</code></td><td>whatever your controller decides. Avoid it if you want the Ingress to be portable.</td></tr>
+        </tbody>
+      </table></div>
+      <p>When more than one rule matches, the longest path wins. That is why <code>/api</code> wins over <code>/</code> for <code>/api/users</code>.</p>
+
+      <h3>Which controller? The class</h3>
+      <p>A cluster can run several controllers. <code>ingressClassName</code> picks one by naming an <strong>IngressClass</strong>. If you leave it out, a default class must exist, marked with the annotation <code>ingressclass.kubernetes.io/is-default-class: "true"</code>.</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get ingressclass
+kubectl get ingress
+kubectl describe ingress shop
+</code></pre></div>
+      <ul>
+        <li><code>get ingressclass</code> shows which controllers are installed. An empty list means <strong>nothing will act on your Ingress</strong>.</li>
+        <li><code>get ingress</code> shows the host and, once a controller has picked it up, an address.</li>
+        <li><code>describe ingress</code> shows each rule and the backend it resolved to, with events from the controller.</li>
+      </ul>
+
+      <h3>HTTPS</h3>
+      <div class="code" data-lang="yaml"><pre><code>
+spec:
+  ingressClassName: example
+  tls:
+    - hosts:
+        - shop.example.com
+      secretName: shop-tls
+  rules:
+    - host: shop.example.com
+      # ...
+</code></pre></div>
+      <p>The controller ends TLS at the door: it uses the certificate in the Secret <code>shop-tls</code> (a Secret of type <code>kubernetes.io/tls</code>, with <code>tls.crt</code> and <code>tls.key</code>), decrypts, then sends plain HTTP to the Service. You rarely create that Secret by hand. A tool called <strong>cert-manager</strong> can request and renew certificates and write the Secret for you.</p>
+
+      <h3>The portability trap</h3>
+      <p>Ingress only standardises host and path. Everything else (redirects, rewrites, rate limits, timeouts, CORS) is configured with <strong>annotations</strong> that each controller invents for itself. An Ingress full of <code>nginx.ingress.kubernetes.io/...</code> annotations works on one controller and is ignored by another. That is one of the main reasons Gateway API exists.</p>
+
+      <h2>Gateway API</h2>
+      <p>The Gateway API is the newer design. Instead of one overloaded object it has separate objects for separate people, and it puts the things annotations used to do (redirects, header changes, traffic splitting) into real fields.</p>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th>Object</th><th>Role</th><th>Who owns it</th></tr></thead>
+        <tbody>
+          <tr><td><code>GatewayClass</code></td><td>a type of gateway, backed by one controller (like an IngressClass)</td><td>the infrastructure provider</td></tr>
+          <tr><td><code>Gateway</code></td><td>an actual entry point: which ports and protocols it listens on</td><td>the cluster operator</td></tr>
+          <tr><td><code>HTTPRoute</code></td><td>the routing rules: host, path, headers to Services</td><td>the application developer</td></tr>
+        </tbody>
+      </table></div>
+      <div class="flow"><span>GatewayClass <small>(who implements)</small></span><i>→</i><span>Gateway <small>(the listener)</small></span><i>→</i><span>HTTPRoute <small>(the rules)</small></span><i>→</i><span>Service</span></div>
+
+      <p>This split is the point. The platform team owns the Gateway: the ports, the certificates, which namespaces may attach routes. Each app team owns its own HTTPRoute in its own namespace. In the Ingress world they all edited one object.</p>
+
+      <div class="code" data-lang="yaml" data-file="gateway.yaml"><pre><code>
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: shop-gateway
+spec:
+  gatewayClassName: example
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: shop
+spec:
+  parentRefs:
+    - name: shop-gateway
+  hostnames:
+    - "shop.example.com"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api
+      backendRefs:
+        - name: api
+          port: 80
+    - backendRefs:
+        - name: web
+          port: 80
+</code></pre></div>
+
+      <div class="code" data-lang="tree"><pre><code>
+Gateway
+  gatewayClassName: example     which controller implements it
+  listeners:
+    - port: 80, protocol: HTTP  what it listens on
+      allowedRoutes: from: Same only routes in this namespace may attach
+
+HTTPRoute
+  parentRefs: shop-gateway      which Gateway to attach to
+  hostnames: shop.example.com   which Host header
+  rules:
+    - matches: path /api        if the path starts with /api
+      backendRefs: api:80       send it to Service api
+    - backendRefs: web:80       no match given = everything else goes to web
+</code></pre></div>
+
+      <p>The three apiVersions all read <code>gateway.networking.k8s.io/v1</code>. As of the Kubernetes documentation I read, the stable kinds are GatewayClass, Gateway, HTTPRoute and GRPCRoute.</p>
+
+      <h3>Things Gateway API does in fields, not annotations</h3>
+      <div class="code" data-lang="yaml"><pre><code>
+rules:
+  - backendRefs:
+      - name: web-v1
+        port: 80
+        weight: 90
+      - name: web-v2
+        port: 80
+        weight: 10
+</code></pre></div>
+      <p>That is a 90/10 <strong>traffic split</strong> for a canary release, written in a standard field that any compliant controller understands. Other standard pieces: matching on headers, redirects, URL rewrites and header edits (as route <em>filters</em>), and routes that refer to Services in other namespaces (which need explicit permission through a <code>ReferenceGrant</code>).</p>
+
+      <h3>Ingress or Gateway API?</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th></th><th>Ingress</th><th>Gateway API</th></tr></thead>
+        <tbody>
+          <tr><td>Status</td><td>stable, <strong>frozen</strong></td><td>actively developed, recommended</td></tr>
+          <tr><td>Built into Kubernetes?</td><td>the API is, the controller is not</td><td>neither: it is an add-on (custom resources) plus a controller</td></tr>
+          <tr><td>Roles</td><td>one object for everyone</td><td>split: provider, operator, developer</td></tr>
+          <tr><td>Beyond host and path</td><td>controller-specific annotations</td><td>standard fields and filters</td></tr>
+          <tr><td>Protocols</td><td>HTTP and HTTPS</td><td>HTTP, gRPC, and more kinds of route</td></tr>
+          <tr><td>Traffic splitting</td><td>annotations, differ per controller</td><td>built in (<code>weight</code>)</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>Both need a <strong>controller</strong> to do anything. The API objects are just requests. Gateway API is an add-on: the CRDs (chapter 19) must be installed, and a controller must implement them. Many implementations exist, including Envoy Gateway, NGINX Gateway Fabric, Cilium, Traefik and the big cloud providers. Canonical Kubernetes lists ingress and gateway among its optional features, so on that distribution you switch one on instead of installing it (chapter 22).</p>
+      </div>
+
+      <h2>Moving off ingress-nginx</h2>
+      <p>If you meet a cluster still running ingress-nginx, the honest advice is the project's own: plan a migration. The Kubernetes maintainers' statement says there is no drop-in replacement, so budget real work. The usual path:</p>
+      <ol>
+        <li>Inventory your Ingresses and, above all, the <strong>annotations</strong> they use. Those are what will not carry over.</li>
+        <li>Pick a Gateway API controller (or another Ingress controller) and install it <em>beside</em> the old one.</li>
+        <li>Translate Ingress rules to Gateway and HTTPRoute objects. A conversion tool called <code>ingress2gateway</code> exists to help, but review its output. Do not trust it blindly.</li>
+        <li>Test with a separate hostname. Then move DNS across and watch error rates.</li>
+        <li>Remove ingress-nginx once nothing needs it.</li>
+      </ol>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li>An Ingress controller is <strong>nginx as a reverse proxy</strong>, the exact thing in the Linux handbook's Nginx chapter. There you edited <code>/etc/nginx/sites-available/</code>, ran <code>nginx -t</code> and reloaded. Here the controller generates that configuration from Ingress objects and reloads itself.</li>
+        <li><code>server_name</code> and <code>location</code> blocks in nginx are the same idea as <code>host</code> and <code>path</code> in an Ingress rule.</li>
+        <li>Ports 80 and 443, and <code>curl -I</code> with a <code>Host</code> header, are the same debugging tools you used for Nginx on the VPS.</li>
+        <li>TLS certificates are files with keys. <code>chmod 600</code> logic applies: a TLS Secret is a private key, so treat it like <code>/etc/ssl/private</code>.</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Creating an Ingress with no controller installed.</strong> It is accepted by the API and nothing happens. <code>kubectl get ingressclass</code> being empty is the clue.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Wrong or missing <code>ingressClassName</code>.</strong> With several controllers, or none marked default, nobody claims it. Name the class.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Pointing a backend at a Service that does not exist, or in another namespace.</strong> An Ingress can only reach Services in its own namespace. Gateway API routes can cross namespaces, but only with a <code>ReferenceGrant</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"Ingress is a type of Service."</strong> It is not. An Ingress sends traffic <em>to</em> Services. And the controller itself usually sits behind a <code>LoadBalancer</code> or <code>NodePort</code> Service.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Annotations that only one controller understands.</strong> They silently do nothing on another. Treat each as a dependency on that controller.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Choosing ingress-nginx for a new cluster.</strong> It is retired and gets no security fixes. Choose a maintained controller, and prefer Gateway API.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p>The Ingress controller is your <strong>public front door</strong>. A broken rule can send everyone's traffic to the wrong app, and a missing TLS setting can expose private services over plain HTTP. Change routes one at a time, and test on a spare hostname first.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>Part A needs only your kind cluster. Part B installs <strong>Envoy Gateway</strong> (a Gateway API controller) using the project's own quickstart. The install command carries a version number that moves, so open the <a href="https://gateway.envoyproxy.io/docs/tasks/quickstart/">Envoy Gateway quickstart</a> and use the version shown there. It was v1.9.2 when I read it.</p>
+      </div>
+
+      <h3>Part A: write and validate an Ingress, with no controller</h3>
+      <div class="code" data-lang="bash"><pre><code>
+# 1. is there an ingress class on this cluster?
+kubectl get ingressclass
+
+# 2. ask the API server to validate your Ingress without storing it
+kubectl apply --dry-run=server -f shop-ingress.yaml
+
+# 3. learn the fields from the cluster itself
+kubectl explain ingress.spec.rules.http.paths
+kubectl explain ingress.spec.tls
+</code></pre></div>
+      <p>Save the Ingress from this chapter as <code>shop-ingress.yaml</code>. Step 2 prints <code>ingress.networking.k8s.io/shop created (server dry run)</code>-style output on success, and an error if a field is wrong. Try breaking it: change <code>pathType: Prefix</code> to <code>pathType: Fuzzy</code>.</p>
+
+      <h3>Part B: a real route with Envoy Gateway</h3>
+      <div class="code" data-lang="bash"><pre><code>
+# 1. install the controller (use the version from the quickstart page)
+helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.9.2 -n envoy-gateway-system --create-namespace
+kubectl wait --timeout=5m -n envoy-gateway-system deployment/envoy-gateway --for=condition=Available
+
+# 2. the project's own demo: a GatewayClass, a Gateway named eg, and an HTTPRoute
+kubectl apply -f https://github.com/envoyproxy/gateway/releases/download/v1.9.2/quickstart.yaml -n default
+kubectl get gatewayclass,gateway,httproute
+
+# 3. kind has no cloud load balancer, so reach it with a port-forward
+export ENVOY_SERVICE=$(kubectl get svc -n envoy-gateway-system --selector=gateway.envoyproxy.io/owning-gateway-namespace=default,gateway.envoyproxy.io/owning-gateway-name=eg -o jsonpath='{.items[0].metadata.name}')
+kubectl -n envoy-gateway-system port-forward service/${ENVOY_SERVICE} 8888:80 &amp;
+curl --verbose --header "Host: www.example.com" http://localhost:8888/get
+</code></pre></div>
+
+      <p>Now point it at your own app. This uses the Gateway <code>eg</code> from the demo:</p>
+      <div class="code" data-lang="yaml" data-file="web-route.yaml"><pre><code>
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web
+spec:
+  parentRefs:
+    - name: eg
+  hostnames:
+    - "web.example.com"
+  rules:
+    - backendRefs:
+        - name: web
+          port: 80
+</code></pre></div>
+      <div class="code" data-lang="bash"><pre><code>
+# 4. your own app, and a route to it
+kubectl create deployment web --image=nginx:1.27
+kubectl expose deployment web --port=80
+kubectl apply -f web-route.yaml
+kubectl get httproute web
+kubectl describe httproute web
+curl --header "Host: web.example.com" http://localhost:8888/
+
+# 5. clean up
+kill %1
+kubectl delete -f web-route.yaml
+kubectl delete service,deployment web
+kubectl delete -f https://github.com/envoyproxy/gateway/releases/download/v1.9.2/quickstart.yaml --ignore-not-found=true
+helm uninstall eg -n envoy-gateway-system
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>Part A, step 2: the server accepts or rejects the YAML without any controller being present. Validation is the API server's job. Routing is the controller's.</li>
+        <li>Part B, step 2: <code>get gatewayclass,gateway,httproute</code> shows the three layers. Check the Gateway reports it is programmed.</li>
+        <li>Part B, step 4: <code>describe httproute</code> has a status section saying whether the Gateway accepted the route. <code>curl</code> with the <code>Host</code> header reaches nginx. Without the <code>Host</code> header it should not match your route. That is host routing at work.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>What's the difference between a Service of type LoadBalancer and an Ingress?</summary>
+          <div class="answer">
+            <p>A LoadBalancer Service exposes one Service on its own external IP, at layer 4, with no idea of hostnames or paths. On a cloud that's one load balancer per Service. An Ingress is a set of HTTP routing rules, host and path to Service, handled by one controller behind a single entry point. So I can serve many apps through one IP and terminate TLS in one place. The controller itself usually sits behind a LoadBalancer Service.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What is an Ingress controller, and does Kubernetes include one?</summary>
+          <div class="answer">
+            <p>It's the program that reads Ingress objects and does the routing, typically a reverse proxy like nginx, Traefik, HAProxy or Envoy, or a cloud load balancer integration. Kubernetes doesn't include one. If I create an Ingress with no controller installed, the API accepts it and nothing happens. I select the controller with an IngressClass.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Why is the project moving from Ingress to Gateway API?</summary>
+          <div class="answer">
+            <p>Ingress only standardised host and path, so everything else, like redirects, rewrites and rate limits, lived in controller-specific annotations that weren't portable. It also puts everyone in one object. Gateway API splits the roles: a GatewayClass for the implementation, a Gateway owned by the platform team, and HTTPRoutes owned by app teams. It makes things like traffic splitting and header matching real, portable fields. The Ingress API is frozen: it stays, but gets no new features.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>ingress-nginx has been retired. What would you do about a cluster that uses it?</summary>
+          <div class="answer">
+            <p>It gets no more releases or security fixes since March 2026, so I'd plan a migration rather than wait. First inventory the Ingresses and especially the annotations, since those are what won't translate. Pick a maintained controller, preferably a Gateway API one, and install it alongside. Convert the rules, maybe with the ingress2gateway tool but reviewing the output, test on a spare hostname, then move DNS and watch. The Kubernetes maintainers said there's no drop-in replacement, so I'd expect real work.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How does TLS work with an Ingress?</summary>
+          <div class="answer">
+            <p>The Ingress has a <code>tls</code> section with the hostnames and the name of a Secret of type kubernetes.io/tls holding the certificate and private key. The controller terminates TLS at the edge using that certificate, then forwards plain HTTP to the Service inside the cluster. In practice I'd use cert-manager to request and renew the certificate and keep the Secret up to date, rather than managing it by hand.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Check</strong> <code>kubectl get ingressclass</code> before you write rules. <strong>Name</strong> the class. <strong>Route</strong> to Services, never to Pods. <strong>Avoid</strong> controller-specific annotations when you can, and note each one you use. <strong>Prefer</strong> Gateway API for anything new. <strong>Test</strong> with <code>curl --header "Host: ..."</code>. And say plainly in the interview: "Ingress is frozen, ingress-nginx is retired, new work goes on Gateway API."</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
