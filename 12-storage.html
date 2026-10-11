@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storage: volumes, PV, PVC · Kubernetes Handbook</title>
+<meta name="description" content="A container's filesystem disappears when the container does. That is fine for a web server and fatal for a database. Kubernetes solves it with a small chain of objects: volumes, PersistentVolumes, cla">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="12">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Storage: volumes, PV, PVC</h1>
+            <p class="sub">What happens to data when a Pod dies</p>
+          </div>
+          <span class="pill">Section 12</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">A container's filesystem disappears when the container does. That is fine for a web server and fatal for a database. Kubernetes solves it with a small chain of objects: volumes, PersistentVolumes, claims and StorageClasses. The names are awkward the first time. The idea behind them is simple: <em>ask for storage, do not build it</em>.</p>
+
+      <h2>The problem</h2>
+      <p>Three situations, in order of how bad they get:</p>
+      <ul>
+        <li>Your app writes a file into its own filesystem. The container restarts, and the file is gone.</li>
+        <li>You want two containers in one Pod to share a folder. That needs a volume.</li>
+        <li>You run a database. The Pod is deleted and recreated on <em>another node</em>. The data must follow, and the database should not need to know which disk or which cloud it is on.</li>
+      </ul>
+      <p>The last one is the hard one. Developers want to say "I need 10 GB that survives". An administrator knows how to provide that on this particular cluster. Kubernetes puts a request form between them.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>A <strong>PersistentVolumeClaim</strong> (PVC) is an app's <em>request</em> for storage. A <strong>PersistentVolume</strong> (PV) is a piece of real storage. A <strong>StorageClass</strong> says <em>how to create</em> one on demand. The app asks with a claim, the cluster supplies a volume, and the data outlives the Pod.</p>
+      </div>
+
+      <div class="cards">
+        <div class="card"><span class="tag">Think of it as</span><p>Parking. The PV is a real space. The PVC is a permit request: "one space, big enough for a van". The StorageClass is the garage operator who builds a space when asked.</p></div>
+        <div class="card"><span class="tag">PV</span><p>A real disk or directory, registered with the cluster. It belongs to the cluster, not to a namespace.</p></div>
+        <div class="card"><span class="tag">PVC</span><p>A claim made by an app, in its namespace: size, access mode, class. Kubernetes binds it to a matching PV.</p></div>
+        <div class="card"><span class="tag">StorageClass</span><p>A recipe for creating PVs automatically (dynamic provisioning), usually via a CSI driver for your cloud or storage system.</p></div>
+      </div>
+
+      <div class="flow"><span>Pod</span><i>→ uses →</i><span>PVC <small>(request)</small></span><i>→ bound to →</i><span>PV <small>(real storage)</small></span><i>← made by ←</i><span>StorageClass</span></div>
+
+      <h2>Volumes that live and die with the Pod</h2>
+      <p>Before persistent storage, the simpler kinds. A <strong>volume</strong> is a folder you declare once at Pod level and mount into containers. You saw one in chapter 6.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Volume type</th><th>Lives as long as</th><th>For</th></tr></thead>
+        <tbody>
+          <tr><td><code>emptyDir</code></td><td>the Pod</td><td>scratch space; sharing files between containers in a Pod; caches. Survives a container restart, not a Pod being replaced.</td></tr>
+          <tr><td><code>configMap</code>, <code>secret</code></td><td>the Pod (content comes from the object)</td><td>config files and credentials (chapter 11)</td></tr>
+          <tr><td><code>hostPath</code></td><td>the node</td><td>a folder on the node itself. Risky: it ties the Pod to a node and exposes the node's disk. Mostly for system Pods and labs.</td></tr>
+          <tr><td><code>persistentVolumeClaim</code></td><td><strong>independent of the Pod</strong></td><td>data that must survive</td></tr>
+        </tbody>
+      </table></div>
+      <div class="code" data-lang="yaml"><pre><code>
+volumes:
+  - name: scratch
+    emptyDir: {}
+  - name: fast-scratch
+    emptyDir:
+      medium: Memory
+      sizeLimit: 64Mi
+</code></pre></div>
+      <ul>
+        <li>The first <code>emptyDir</code> uses the node's disk.</li>
+        <li><code>medium: Memory</code> backs it with RAM (tmpfs). Fast, but it counts against the container's memory.</li>
+      </ul>
+
+      <h2>Persistent storage</h2>
+
+      <h3>1. The claim</h3>
+      <div class="code" data-lang="yaml" data-file="data-pvc.yaml"><pre><code>
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+spec:
+  accessModes:
+    - ReadWriteOnce      who may mount it, and how (see the table below)
+  resources:
+    requests:
+      storage: 1Gi       at least this much
+  (storageClassName:)    which StorageClass to ask. Leave out for the cluster's default.
+</code></pre></div>
+      <p>That is all an app team writes. No disk type, no cloud name, no device path.</p>
+
+      <h3>2. Using it in a Pod</h3>
+      <div class="code" data-lang="yaml" data-file="writer-pod.yaml"><pre><code>
+apiVersion: v1
+kind: Pod
+metadata:
+  name: writer
+spec:
+  containers:
+    - name: app
+      image: busybox:1.37
+      command: ["sh", "-c", "date &gt;&gt; /data/log.txt; cat /data/log.txt; sleep 3600"]
+      volumeMounts:
+        - name: storage
+          mountPath: /data
+  volumes:
+    - name: storage
+      persistentVolumeClaim:
+        claimName: data
+</code></pre></div>
+      <p>The Pod refers to the claim by name. The container sees an ordinary folder at <code>/data</code>.</p>
+
+      <h3>3. What happens behind the scenes</h3>
+      <ol>
+        <li>You create the PVC. Kubernetes looks for a PV that fits, or asks the <strong>StorageClass</strong>'s provisioner to make one. That is <strong>dynamic provisioning</strong>.</li>
+        <li>The PV is created and <strong>bound</strong> to your claim. One claim, one volume.</li>
+        <li>You start a Pod that uses the claim. The scheduler places it, and the kubelet attaches and mounts the volume on that node.</li>
+        <li>The Pod dies. The claim, the volume and the data stay. A new Pod that mentions the same claim gets the same data.</li>
+      </ol>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get storageclass
+kubectl get pvc
+kubectl get pv
+kubectl describe pvc data
+</code></pre></div>
+      <ul>
+        <li><code>get storageclass</code> lists the classes. One is marked <code>(default)</code>.</li>
+        <li><code>get pvc</code> shows <code>STATUS</code>: <code>Pending</code> (waiting) or <code>Bound</code> (has a volume).</li>
+        <li><code>get pv</code> shows the volumes, who they are bound to, and the reclaim policy. Note it has no namespace.</li>
+        <li><code>describe pvc</code> has the events when a claim is stuck.</li>
+      </ul>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>Many StorageClasses use <code>volumeBindingMode: WaitForFirstConsumer</code>. The claim stays <code>Pending</code> <strong>on purpose</strong> until a Pod uses it, because the volume should be created where the Pod will run. A <code>Pending</code> PVC with no Pod yet is normal, not a fault. kind's default class behaves this way.</p>
+      </div>
+
+      <h2>The StorageClass</h2>
+      <div class="code" data-lang="yaml"><pre><code>
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+provisioner: ...                who creates the storage: a CSI driver (here, an AWS example)
+parameters: type: gp3           options only that driver understands
+reclaimPolicy: Delete           what happens to the data when the claim is deleted
+volumeBindingMode:              Immediate = create at once; WaitForFirstConsumer = wait for a Pod
+allowVolumeExpansion: true      the claim may be made bigger later
+</code></pre></div>
+      <p>The <code>provisioner</code> line above is an <em>example</em> for one cloud. Yours depends on your platform: a cloud's CSI driver, Ceph, OpenEBS, or a local-path provisioner on a laptop. <strong>CSI</strong> (Container Storage Interface) is the standard plug-in layer. The old built-in cloud volume types have been removed from Kubernetes in favour of CSI drivers.</p>
+
+      <h3>Access modes</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Mode</th><th>Short</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>ReadWriteOnce</code></td><td>RWO</td><td>read-write by <strong>one node</strong> (several Pods on that node may share it)</td></tr>
+          <tr><td><code>ReadWriteOncePod</code></td><td>RWOP</td><td>read-write by <strong>one Pod</strong> only</td></tr>
+          <tr><td><code>ReadOnlyMany</code></td><td>ROX</td><td>read-only by many nodes</td></tr>
+          <tr><td><code>ReadWriteMany</code></td><td>RWX</td><td>read-write by many nodes. Needs storage that supports it, like NFS or CephFS. Cloud block disks usually do not.</td></tr>
+        </tbody>
+      </table></div>
+      <p>Block disks (the common cloud kind) are RWO. That single fact causes the most storage trouble. See mistakes below.</p>
+
+      <h3>What happens to the data afterwards: reclaim policy</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Policy</th><th>When the PVC is deleted</th></tr></thead>
+        <tbody>
+          <tr><td><code>Delete</code></td><td>the PV <strong>and the real disk are deleted</strong>. This is the default for dynamically created volumes.</td></tr>
+          <tr><td><code>Retain</code></td><td>the PV is kept, in a <code>Released</code> state, with the data intact, for an administrator to deal with.</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Growing a volume</h3>
+      <p>If the StorageClass allows expansion, edit the claim and raise the number. You can only grow, never shrink.</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl patch pvc data -p '{"spec":{"resources":{"requests":{"storage":"2Gi"}}}}'
+kubectl get pvc data
+</code></pre></div>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li>A mounted volume is a <strong>mount point</strong>, the same idea as <code>/mnt</code> or <code>/media</code> in the Linux filesystem chapter. Inside a Pod, <code>df -h /data</code> shows a separate filesystem mounted there, and <code>mount | grep /data</code> shows the details.</li>
+        <li><code>lsblk</code> and <code>df -h</code> from the handbook's "what the kernel manages" section work on a node to see real disks.</li>
+        <li>Think of a PV as a disk you would add to <code>/etc/fstab</code>, and a PVC as the entry that says "mount me one of those at this path", with Kubernetes doing the <code>mount</code> for you.</li>
+        <li><strong>Permissions still apply.</strong> If the app runs as a non-root user and the volume is owned by root, writes fail with <code>Permission denied</code>. <code>securityContext.fsGroup</code> makes Kubernetes set the volume's group ownership so the app's group can write. It is <code>chgrp</code> and <code>chmod g+w</code>, done at mount time.</li>
+        <li><strong>A disk is not a backup.</strong> The Linux handbook's advice about backups and snapshots before upgrades applies unchanged. A PV is one copy of the data.</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"My data is safe in an <code>emptyDir</code>."</strong> It survives a container restart but not the Pod being deleted or moved. For anything you need tomorrow, use a PVC.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"My PVC is <code>Pending</code>, so storage is broken."</strong> If the class uses <code>WaitForFirstConsumer</code>, it stays Pending until a Pod uses it. Create the Pod first. If a Pod uses it and it is still Pending, <code>describe pvc</code> usually shows no default StorageClass or no provisioner.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>A Deployment with several replicas sharing one RWO claim.</strong> The Pods land on different nodes, but an RWO disk attaches to one node. Some Pods hang in <code>ContainerCreating</code> with a multi-attach error. For one volume per replica, use a StatefulSet (chapter 14). For one volume shared by many, you need an RWX-capable class.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong><code>hostPath</code> for real data.</strong> It works until the Pod moves to another node and finds an empty folder. It also gives the Pod access to the node's filesystem.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Mixing up PV and PVC.</strong> An app only ever writes a PVC. A PV is the cluster's side. Also, a PVC is namespaced, a PV is not.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"Permission denied" on the mounted folder.</strong> A non-root app on a root-owned volume. Set <code>fsGroup</code>, or fix ownership with an init container.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Trying to shrink a claim.</strong> Only growing is supported, and only if <code>allowVolumeExpansion</code> is true.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p>With the default <code>reclaimPolicy: Delete</code>, <strong>deleting a PVC deletes the underlying disk and its data</strong>. So does deleting the namespace that holds it. For anything valuable, use a class with <code>Retain</code>, and take backups or snapshots. Check <code>kubectl get pv</code> for the policy before you delete a claim.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>On the kind cluster, which ships with a default StorageClass called <code>standard</code>. Save the PVC as <code>data-pvc.yaml</code> and the Pod as <code>writer-pod.yaml</code>.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+# 1. what classes exist? which is the default?
+kubectl create namespace dev
+kubectl get storageclass
+
+# 2. create the claim, and look at it BEFORE any Pod uses it
+kubectl apply -n dev -f data-pvc.yaml
+kubectl get pvc -n dev
+kubectl describe pvc data -n dev | tail -5
+
+# 3. start a Pod that uses it
+kubectl apply -n dev -f writer-pod.yaml
+kubectl wait -n dev --for=condition=Ready pod/writer --timeout=90s
+kubectl get pvc,pv -n dev
+kubectl logs -n dev writer
+
+# 4. the data outlives the Pod
+kubectl delete pod writer -n dev
+kubectl apply -n dev -f writer-pod.yaml
+kubectl wait -n dev --for=condition=Ready pod/writer --timeout=90s
+kubectl logs -n dev writer                 # two lines now: the old and the new
+
+# 5. look at the mount like a Linux admin
+kubectl exec -n dev writer -- df -h /data
+kubectl exec -n dev writer -- ls -l /data
+
+# 6. the dangerous bit: delete the claim, then look at the volume
+kubectl delete pod writer -n dev
+kubectl get pv
+kubectl delete pvc data -n dev
+kubectl get pv                             # gone, because the reclaim policy is Delete
+
+# 7. clean up
+kubectl delete namespace dev
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>Step 2: the claim is <code>Pending</code>, with an event saying it waits for a first consumer. That is normal for this class.</li>
+        <li>Step 3: now <code>Bound</code>, and a PV has appeared that you never created.</li>
+        <li>Step 4: the log has <strong>two</strong> timestamps. A new Pod, the same data.</li>
+        <li>Step 5: <code>df</code> shows <code>/data</code> as its own mount, not part of the container's root filesystem.</li>
+        <li>Step 6: the PV disappears with the claim. That is <code>Delete</code> in action.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>Explain PV, PVC and StorageClass.</summary>
+          <div class="answer">
+            <p>A PersistentVolume is a piece of real storage in the cluster, and it isn't namespaced. A PersistentVolumeClaim is an app's request for storage in its namespace: a size, an access mode and optionally a class. Kubernetes binds a claim to a matching PV. A StorageClass defines how to create PVs on demand, through a provisioner, usually a CSI driver. So developers just write a claim, and the platform provides the actual disk. That separation is the point.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What is dynamic provisioning?</summary>
+          <div class="answer">
+            <p>When I create a PVC that names a StorageClass, or uses the default one, the class's provisioner creates the underlying disk and the PV automatically and binds it to the claim. Without it, an administrator would have to pre-create PVs by hand and hope they match. With <code>WaitForFirstConsumer</code>, creation is delayed until a Pod is scheduled, so the volume is made in the right zone or node.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What are the access modes, and why does it matter?</summary>
+          <div class="answer">
+            <p>ReadWriteOnce means one node can mount it read-write, ReadWriteOncePod restricts it to a single Pod, ReadOnlyMany lets many nodes read, and ReadWriteMany lets many nodes write. It matters because most cloud block disks are RWO. So a Deployment with several replicas on different nodes can't share one such claim. Some Pods hang trying to attach the disk. For per-replica disks I use a StatefulSet, and for shared writable storage I need a class that supports RWX, like NFS or CephFS.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What happens to the data when I delete a PVC?</summary>
+          <div class="answer">
+            <p>It depends on the reclaim policy. With <code>Delete</code>, which is the default for dynamically provisioned volumes, the PV and the underlying disk are deleted along with the data. With <code>Retain</code>, the PV stays in a Released state with the data intact until an admin deals with it. For important data I use a class with Retain and also take snapshots or backups, because deleting the namespace deletes the claim too.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What's the difference between an emptyDir and a PVC?</summary>
+          <div class="answer">
+            <p>An emptyDir is created when the Pod starts and deleted when the Pod goes away. It survives container restarts but not a replaced Pod, so it's for scratch data, caches, or sharing files between containers. A PVC is backed by a PersistentVolume that exists independently of any Pod, so the data survives Pod deletion and rescheduling. I use emptyDir for temporary data and PVCs for anything I need to keep.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Ask</strong> for storage with a claim, never by disk name. <strong>Know</strong> your StorageClass: its reclaim policy, binding mode and access modes. <strong>Remember</strong> that most block storage is RWO. <strong>Use</strong> StatefulSets for databases. <strong>Check</strong> <code>kubectl get pv</code> before deleting a claim. <strong>Back up</strong>, because a volume is not a backup. And say it: "emptyDir is scratch, a PVC is a promise."</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

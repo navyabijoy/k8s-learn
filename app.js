@@ -17,7 +17,7 @@
     { n: 9,  file: "09-services.html",         title: "Services and cluster DNS", ready: true },
     { n: 10, file: "10-ingress.html",          title: "Ingress", ready: true },
     { n: 11, file: "11-config-secrets.html",   title: "ConfigMaps and Secrets", ready: true },
-    { n: 12, file: "12-storage.html",          title: "Storage: volumes, PV, PVC" },
+    { n: 12, file: "12-storage.html",          title: "Storage: volumes, PV, PVC", ready: true },
     { n: 13, file: "13-probes-resources.html", title: "Probes, requests, limits, self-healing", ready: true },
     { n: 14, file: "14-workloads.html",        title: "StatefulSets, DaemonSets, Jobs, CronJobs" },
     { n: 15, file: "15-scheduling.html",       title: "Scheduling: taints, tolerations, affinity" },
