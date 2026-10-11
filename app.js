@@ -102,6 +102,15 @@
   paintThemeBtn();
   document.body.appendChild(themeBtn);
 
+  /* ---------- "Chapter N of 23" marker ---------- */
+  var headH1 = document.querySelector(".chapter-head h1");
+  if (headH1 && current) {
+    var pct = Math.round((current / CHAPTERS.length) * 100);
+    var marker = el("div", { "class": "chap-count" },
+      "<span>Chapter " + current + " of " + CHAPTERS.length + '</span><span class="bar" role="presentation"><i style="width:' + pct + '%"></i></span>');
+    headH1.parentNode.insertBefore(marker, headH1);
+  }
+
   /* ---------- Prev / next ---------- */
   var navBox = document.getElementById("chapter-nav");
   if (navBox && current) {

@@ -142,7 +142,7 @@ kubectl run web --image=nginx:1.27 --port=80 --dry-run=client -o yaml
         <li><code>--dry-run=client -o yaml</code> creates nothing. It prints the YAML that <code>run</code> would send. It is the fastest way to get a starting file.</li>
       </ul>
 
-      <p>The third command printed this on a real cluster. Notice what Kubernetes added for you: <code>restartPolicy: Always</code> and <code>dnsPolicy: ClusterFirst</code> are defaults.</p>
+      <p>The third command printed this (it needs no cluster, <code>kubectl</code> builds it locally). Notice what <code>kubectl</code> filled in for you: <code>restartPolicy: Always</code> and <code>dnsPolicy: ClusterFirst</code> are defaults.</p>
 
       <div class="code" data-lang="out"><pre><code>
 apiVersion: v1
@@ -178,10 +178,7 @@ kubectl describe pod web
         <li><code>describe</code> is the full story, with a list of <strong>Events</strong> at the bottom. When something is wrong, read the events first.</li>
       </ul>
 
-      <div class="code" data-lang="out"><pre><code>
-NAME   READY   STATUS    RESTARTS   AGE   IP             NODE       NOMINATED NODE   READINESS GATES
-web    1/1     Running   0          1s    10.244.0.127   minikube   &lt;none&gt;           &lt;none&gt;
-</code></pre></div>
+      <p>You should see one line: <code>web</code>, <code>1/1</code> ready, <code>Running</code>, <code>0</code> restarts, plus (with <code>-o wide</code>) the Pod IP and the node name.</p>
 
       <p>Column by column:</p>
       <div class="table-wrap"><table>
@@ -195,18 +192,9 @@ web    1/1     Running   0          1s    10.244.0.127   minikube   &lt;none&gt;
         </tbody>
       </table></div>
 
-      <p>The bottom of <code>describe</code> is a timeline of what happened to the Pod:</p>
-      <div class="code" data-lang="out"><pre><code>
-Events:
-  Type    Reason     Age   From               Message
-  ----    ------     ----  ----               -------
-  Normal  Scheduled  1s    default-scheduler  Successfully assigned default/web to minikube
-  Normal  Pulled     1s    kubelet            spec.containers{nginx}: Container image "nginx:1.27" already present on machine and can be accessed by the pod
-  Normal  Created    1s    kubelet            spec.containers{nginx}: Container created
-  Normal  Started    1s    kubelet            spec.containers{nginx}: Container started
-</code></pre></div>
+      <p>The bottom of <code>describe</code> is a timeline of what happened to the Pod. On a healthy start it reads like this, top to bottom:</p>
       <div class="flow"><span>Scheduled (scheduler picks a node)</span><i>→</i><span>Pulled (kubelet gets the image)</span><i>→</i><span>Created</span><i>→</i><span>Started</span></div>
-      <p>This run had the image cached already. On a node that has never seen the image, you also get a <code>Pulling</code> event first, and the wait can be many seconds.</p>
+      <p>On a node that has never seen the image there is also a <code>Pulling</code> event before <code>Pulled</code>, and the wait can be many seconds. If the image is already on the node, <code>Pulled</code> says so.</p>
       <p>Two different programs wrote those lines. The <code>default-scheduler</code> picked a node. Then the <code>kubelet</code> on that node did the work. Chapter 3 explains who they are. For now, remember that "who wrote this event" tells you which part of the cluster to look at.</p>
 
       <h2>Talk to it</h2>
@@ -226,10 +214,7 @@ kubectl port-forward pod/web 8080:80
       <div class="code" data-lang="bash"><pre><code>
 curl -I localhost:8080
 </code></pre></div>
-      <div class="code" data-lang="out"><pre><code>
-HTTP/1.1 200 OK
-Server: nginx/1.27.5
-</code></pre></div>
+      <p>You should see <code>HTTP/1.1 200 OK</code> and a <code>Server: nginx</code> header. That is nginx answering from inside the Pod.</p>
 
       <h2>Two containers, one Pod</h2>
       <p>Back to the problem from the start. nginx serves a folder. A second container writes into it. They share a volume called <code>shared</code>.</p>
@@ -263,9 +248,7 @@ spec:
       <div class="code" data-lang="bash"><pre><code>
 kubectl exec web-with-helper -c writer -- wget -qO- localhost
 </code></pre></div>
-      <div class="code" data-lang="out"><pre><code>
-Sun Oct 11 11:25:08 UTC 2026
-</code></pre></div>
+      <p>You should see the current date. The <code>writer</code> container put it in a file, and nginx in the other container served it. They share one volume, and they share <code>localhost</code>.</p>
       <p>The <code>-c</code> flag picks a container. You need it whenever a Pod has more than one.</p>
 
       <div class="callout key">
@@ -275,27 +258,13 @@ Sun Oct 11 11:25:08 UTC 2026
 
       <h2>Linux you already know</h2>
       <p>A container is not a small virtual machine. It is a <strong>normal Linux process</strong> that the kernel has fenced in with <strong>namespaces</strong> (what it can see) and <strong>cgroups</strong> (how much it can use). You met both ideas in the Linux handbook: <code>ps</code>, <code>/proc</code>, and the kernel that decides who gets CPU and memory.</p>
-      <p>A Pod is the same trick applied to a group. Look at the namespaces of PID 1 in each container of <code>web-with-helper</code> (<code>nginx</code> uses GNU <code>ls</code>, <code>busybox</code> a smaller one, which is why the spacing differs):</p>
+      <p>A Pod is the same trick applied to a group. Look at the namespaces of PID 1 in each container of <code>web-with-helper</code>:</p>
 
       <div class="code" data-lang="bash"><pre><code>
 kubectl exec web-with-helper -c nginx  -- ls -l /proc/1/ns/net /proc/1/ns/ipc /proc/1/ns/mnt /proc/1/ns/pid
 kubectl exec web-with-helper -c writer -- ls -l /proc/1/ns/net /proc/1/ns/ipc /proc/1/ns/mnt /proc/1/ns/pid
 </code></pre></div>
-      <p>The <code>nginx</code> container:</p>
-      <div class="code" data-lang="out"><pre><code>
-lrwxrwxrwx 1 root root 0 Oct 11 11:25 /proc/1/ns/ipc -> ipc:[4026536930]
-lrwxrwxrwx 1 root root 0 Oct 11 11:25 /proc/1/ns/mnt -> mnt:[4026537332]
-lrwxrwxrwx 1 root root 0 Oct 11 11:25 /proc/1/ns/net -> net:[4026536933]
-lrwxrwxrwx 1 root root 0 Oct 11 11:25 /proc/1/ns/pid -> pid:[4026537334]
-</code></pre></div>
-      <p>The <code>writer</code> container:</p>
-      <div class="code" data-lang="out"><pre><code>
-lrwxrwxrwx    1 root     root             0 Oct 11 11:25 /proc/1/ns/ipc -> ipc:[4026536930]
-lrwxrwxrwx    1 root     root             0 Oct 11 11:25 /proc/1/ns/mnt -> mnt:[4026537336]
-lrwxrwxrwx    1 root     root             0 Oct 11 11:25 /proc/1/ns/net -> net:[4026536933]
-lrwxrwxrwx    1 root     root             0 Oct 11 11:25 /proc/1/ns/pid -> pid:[4026537338]
-</code></pre></div>
-      <p>Compare the numbers in brackets. Same number means same namespace.</p>
+      <p>Each line ends in something like <code>net:[&lt;number&gt;]</code>. That number identifies a namespace. If two containers print the same number, they are in the same namespace. Here is what you will find:</p>
 
       <div class="table-wrap"><table>
         <thead><tr><th>Namespace</th><th>Same number in both?</th><th>What it means</th></tr></thead>
@@ -319,10 +288,7 @@ lrwxrwxrwx    1 root     root             0 Oct 11 11:25 /proc/1/ns/pid -> pid:[
 kubectl delete pod web
 kubectl get pod web
 </code></pre></div>
-      <div class="code" data-lang="out"><pre><code>
-pod "web" deleted from default namespace
-Error from server (NotFound): pods "web" not found
-</code></pre></div>
+      <p>The second command answers with a <code>NotFound</code> error. Nothing recreated it.</p>
       <p>A Pod is also never moved. If its node dies, the Pod dies with it. Something else has to notice and create a new Pod, and that something is a controller. The next chapter introduces the most common one, the Deployment.</p>
 
       <div class="flow"><span>You create a Pod</span><i>→</i><span>It runs on one node</span><i>→</i><span>It dies</span><i>→</i><span>Nobody replaces it (unless a controller owns it)</span></div>
@@ -344,10 +310,7 @@ Error from server (NotFound): pods "web" not found
 kubectl run oops --image=nginx:1.27-typo
 kubectl get pod oops
 </code></pre></div>
-      <div class="code" data-lang="out"><pre><code>
-NAME   READY   STATUS             RESTARTS   AGE
-oops   0/1     ImagePullBackOff   0          20s
-</code></pre></div>
+      <p>After a short wait the <code>STATUS</code> column says <code>ImagePullBackOff</code> and <code>READY</code> stays <code>0/1</code>.</p>
       <p>The phase of that Pod is still <code>Pending</code>. <code>ImagePullBackOff</code> is a container reason, not a phase. Chapter 20 gives you a fixed path for these.</p>
 
       <h2>Common mistakes</h2>
@@ -386,7 +349,7 @@ oops   0/1     ImagePullBackOff   0          20s
 
       <div class="callout try">
         <span class="label">Try it</span>
-        <p>You need any local cluster and <code>kubectl</code> pointed at it. The outputs in this chapter came from <strong>minikube on macOS</strong> (Docker driver). The commands are the same on kind or MicroK8s. Chapter 4 covers setup.</p>
+        <p>You need a local cluster and <code>kubectl</code> pointed at it. This handbook uses <strong>kind</strong> (Kubernetes in Docker) on macOS, and MicroK8s on Ubuntu. Chapter 4 sets both up. Commands are the same on any conformant cluster. Check the target first with <code>kubectl config current-context</code>.</p>
       </div>
 
       <div class="code" data-lang="bash"><pre><code>

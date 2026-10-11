@@ -158,6 +158,10 @@ main { flex: 1; min-width: 0; }
 }
 .rule { height: 4px; border-radius: 4px; margin-top: 14px; background: linear-gradient(90deg, #2b6cb0, #8aa04a 55%, var(--gold)); }
 
+.chap-count { display: flex; align-items: center; gap: 10px; font-size: .78rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.chap-count .bar { flex: 0 1 120px; height: 5px; border-radius: 5px; background: var(--border); overflow: hidden; }
+.chap-count .bar i { display: block; height: 100%; background: linear-gradient(90deg, #2b6cb0, var(--gold)); }
+
 /* ---------- Text ---------- */
 h2 { font-size: 1.35rem; margin: 2.1rem 0 .4rem; line-height: 1.3; }
 h3 { font-size: 1.08rem; margin: 1.5rem 0 .3rem; }
