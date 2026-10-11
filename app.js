@@ -10,7 +10,7 @@
     { n: 2,  file: "02-containers.html",       title: "Containers in five minutes" },
     { n: 3,  file: "03-cluster.html",          title: "What a cluster is", ready: true },
     { n: 4,  file: "04-local-cluster.html",    title: "Getting a cluster on your machine" },
-    { n: 5,  file: "05-kubectl-yaml.html",     title: "kubectl basics and reading YAML" },
+    { n: 5,  file: "05-kubectl-yaml.html",     title: "kubectl basics and reading YAML", ready: true },
     { n: 6,  file: "06-pods.html",             title: "Pods", ready: true },
     { n: 7,  file: "07-deployments.html",      title: "Deployments, ReplicaSets, rollouts" },
     { n: 8,  file: "08-labels-namespaces.html",title: "Labels, selectors and namespaces" },

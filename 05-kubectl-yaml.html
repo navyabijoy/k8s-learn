@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kubectl basics and reading YAML · Kubernetes Handbook</title>
+<meta name="description" content="kubectl is how you talk to a cluster, and YAML is what you say. Both look strange for a day and then stop being strange. This chapter gives you the grammar of one and the shape of the other, so you ca">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="5">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>kubectl basics and reading YAML</h1>
+            <p class="sub">How to talk to the cluster and read what it says back</p>
+          </div>
+          <span class="pill">Section 05</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede"><code>kubectl</code> is how you talk to a cluster, and YAML is what you say. Both look strange for a day and then stop being strange. This chapter gives you the grammar of one and the shape of the other, so you can read any manifest you are handed.</p>
+
+      <h2>The problem</h2>
+      <p>The cluster's brain, the API server, speaks HTTP. You could talk to it with <code>curl</code>. You would need the right URL for every object type, the right credentials, and a JSON body for every change. Nobody wants that.</p>
+      <p>You also need a way to write down "what I want" in a file you can keep in git, read, and review. Shell commands do not do that well. A document does.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p><code>kubectl</code> is a command-line HTTP client for the API server. It turns <code>kubectl get pods</code> into a request, and your YAML files into the objects the cluster stores.</p>
+      </div>
+
+      <h2>The grammar of kubectl</h2>
+      <p>Nearly every command has the same shape: <strong>verb, resource, name, flags</strong>.</p>
+
+      <div class="code" data-lang="tree"><pre><code>
+kubectl get pods web -n dev -o wide
+│       │   │    │   │      │
+│       │   │    │   │      └─ output format: wide
+│       │   │    │   └──────── which namespace: dev
+│       │   │    └──────────── which one (optional): web
+│       │   └───────────────── what kind of thing: pods
+│       └───────────────────── what to do: get
+└───────────────────────────── the program
+</code></pre></div>
+
+      <p>Leave out the name and you get all of them in that namespace. Verbs you will use all the time:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Verb</th><th>Does</th><th>Linux cousin</th></tr></thead>
+        <tbody>
+          <tr><td><code>get</code></td><td>List objects, one line each</td><td><code>ls</code></td></tr>
+          <tr><td><code>describe</code></td><td>Show one object in detail, with events</td><td><code>ls -l</code> plus <code>journalctl</code></td></tr>
+          <tr><td><code>apply</code></td><td>Make the cluster match a file</td><td>copy a config file into place</td></tr>
+          <tr><td><code>delete</code></td><td>Remove an object</td><td><code>rm</code></td></tr>
+          <tr><td><code>logs</code></td><td>Print a container's output</td><td><code>tail</code></td></tr>
+          <tr><td><code>exec</code></td><td>Run a command inside a container</td><td><code>ssh</code> in, but into a container</td></tr>
+          <tr><td><code>explain</code></td><td>Show the documentation for a field</td><td><code>man</code></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Three ways to look at the same Pod</h3>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get pod web
+kubectl get pod web -o wide
+kubectl get pod web -o yaml
+</code></pre></div>
+      <ul>
+        <li>Plain <code>get</code> is the summary line.</li>
+        <li><code>-o wide</code> adds the node and the Pod IP.</li>
+        <li><code>-o yaml</code> prints the whole object, the way the API server stores it. It includes a <code>status:</code> block you did not write. When someone says "look at the YAML", this is what they mean.</li>
+      </ul>
+
+      <h3>Picking out one value</h3>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get pod web -o jsonpath='{.status.podIP}'
+kubectl get pods -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName
+kubectl get pods -o name
+</code></pre></div>
+      <ul>
+        <li><code>jsonpath</code> walks into the object and prints one field. Good in scripts.</li>
+        <li><code>custom-columns</code> builds your own table from fields.</li>
+        <li><code>-o name</code> prints only <code>pod/web</code>. Good for piping into other commands.</li>
+      </ul>
+
+      <h3>Finding things</h3>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get pods -A
+kubectl get pods -l app=web
+kubectl get pods --watch
+</code></pre></div>
+      <ul>
+        <li><code>-A</code> (<code>--all-namespaces</code>) looks everywhere, not only your current namespace.</li>
+        <li><code>-l</code> filters by label (chapter 8).</li>
+        <li><code>--watch</code> (<code>-w</code>) keeps the command open and prints a line whenever something changes. Press <code>Ctrl+C</code> to stop. Like <code>tail -f</code>.</li>
+      </ul>
+
+      <h2>Which cluster am I talking to?</h2>
+      <p>This is the question that saves jobs. <code>kubectl</code> does not know about clusters by magic. It reads a file called a <strong>kubeconfig</strong>, by default <code>~/.kube/config</code>. It holds three lists:</p>
+
+      <div class="cards">
+        <div class="card"><span class="tag">Clusters</span><p>Where each API server lives (address and its certificate authority).</p></div>
+        <div class="card"><span class="tag">Users</span><p>How you prove who you are to each cluster (certificate, token, or a login helper).</p></div>
+        <div class="card"><span class="tag">Contexts</span><p>A saved combination: this cluster, with this user, in this namespace.</p></div>
+        <div class="card"><span class="tag">Current context</span><p>The one <code>kubectl</code> uses right now, if you do not say otherwise.</p></div>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl config current-context
+kubectl config get-contexts
+kubectl config use-context kind-handbook
+kubectl config set-context --current --namespace=dev
+</code></pre></div>
+      <ul>
+        <li><code>current-context</code> prints the one you are on. Run it before anything destructive.</li>
+        <li><code>get-contexts</code> lists them all. The current one has a <code>*</code>.</li>
+        <li><code>use-context</code> switches.</li>
+        <li><code>set-context --current --namespace=dev</code> changes the default namespace of the current context, so you can stop typing <code>-n dev</code>.</li>
+      </ul>
+
+      <p>Linux link: this is the same idea as <code>~/.ssh/config</code>, with a list of hosts and the keys to use for each. And just like <code>PATH</code>, the <code>KUBECONFIG</code> environment variable can point <code>kubectl</code> at a different file, or at several files joined with <code>:</code>.</p>
+
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p>You are only ever one <code>use-context</code> away from running <code>kubectl delete</code> on production. Check <code>kubectl config current-context</code> first. Many teams put the context name in their shell prompt for this reason.</p>
+      </div>
+
+      <h2>Reading YAML</h2>
+      <p>YAML is a way to write nested settings as plain text. Three rules cover most of it:</p>
+      <ul>
+        <li><strong>Indentation is structure.</strong> Use spaces. Never tabs. Two spaces per level is the habit.</li>
+        <li><strong><code>key: value</code></strong> is a setting. A key with nothing after it holds a nested block.</li>
+        <li><strong>A line starting with <code>- </code></strong> is one item in a list.</li>
+      </ul>
+
+      <div class="code" data-lang="yaml" data-file="nginx-pod.yaml"><pre><code>
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+  labels:
+    app: web
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.27
+      ports:
+        - containerPort: 80
+</code></pre></div>
+
+      <p>Read it as a tree. Indentation gives the parent:</p>
+      <div class="code" data-lang="tree"><pre><code>
+Pod
+├── apiVersion: v1
+├── kind: Pod
+├── metadata
+│   ├── name: web
+│   └── labels
+│       └── app: web
+└── spec
+    └── containers            ← a list
+        └── (item 1)
+            ├── name: nginx
+            ├── image: nginx:1.27
+            └── ports         ← another list
+                └── (item 1)
+                    └── containerPort: 80
+</code></pre></div>
+
+      <h3>The four top-level fields</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Field</th><th>Answers</th><th>Who writes it</th></tr></thead>
+        <tbody>
+          <tr><td><code>apiVersion</code></td><td>Which version of the API describes this?</td><td>you</td></tr>
+          <tr><td><code>kind</code></td><td>What type of object?</td><td>you</td></tr>
+          <tr><td><code>metadata</code></td><td>What is it called, and what labels does it carry?</td><td>you (plus a few fields the cluster adds)</td></tr>
+          <tr><td><code>spec</code></td><td>What do I want?</td><td>you</td></tr>
+          <tr><td><code>status</code></td><td>What is actually true right now?</td><td>the cluster. You never write it.</td></tr>
+        </tbody>
+      </table></div>
+
+      <p><code>apiVersion</code> looks odd the first time. <code>v1</code> means the original "core" group: Pods, Services, ConfigMaps. Other things live in named groups: Deployments are <code>apps/v1</code>, Ingress is <code>networking.k8s.io/v1</code>. The part before the slash is the group, the part after is the version.</p>
+
+      <h3>YAML gotchas that bite</h3>
+      <div class="code" data-lang="yaml"><pre><code>
+# a number
+replicas: 3
+
+# a string that looks like a number: quote it
+version: "1.27"
+
+# YAML turns these into booleans if you do not quote them
+enabled: "true"
+country: "NO"
+
+# two objects in one file, separated by ---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+  namespace: dev
+</code></pre></div>
+      <ul>
+        <li>Env var values and annotation values must be <strong>strings</strong>. Quote numbers and booleans there.</li>
+        <li><code>---</code> splits one file into several objects. <code>kubectl apply -f</code> reads them all.</li>
+      </ul>
+
+      <h2>You do not need to memorise fields</h2>
+      <p>This is the chapter's best trick. The cluster documents itself:</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl explain pod
+kubectl explain pod.spec.containers
+kubectl explain pod.spec.containers.resources --recursive
+kubectl api-resources
+</code></pre></div>
+      <ul>
+        <li><code>explain pod</code> describes the Pod object and lists its top-level fields.</li>
+        <li>Add dots to go deeper: <code>pod.spec.containers</code> lists what a container may contain.</li>
+        <li><code>--recursive</code> prints the whole subtree as one outline.</li>
+        <li><code>api-resources</code> lists every kind the cluster knows, its short name (like <code>po</code>, <code>svc</code>, <code>deploy</code>), its group, and whether it lives in a namespace. It is also how you find the right <code>apiVersion</code>.</li>
+      </ul>
+      <p>In an interview, "I'd run <code>kubectl explain</code>" is a better answer than a half-remembered field name.</p>
+
+      <h2>apply vs create</h2>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl create -f nginx-pod.yaml
+kubectl apply -f nginx-pod.yaml
+kubectl apply -f ./manifests/
+kubectl diff -f nginx-pod.yaml
+</code></pre></div>
+      <ul>
+        <li><code>create</code> says "make this new". It fails if the object already exists.</li>
+        <li><code>apply</code> says "make the cluster look like this file". It creates if missing and updates if it differs. Run it ten times and nothing breaks.</li>
+        <li>Give <code>apply</code> a folder and it applies every file in it.</li>
+        <li><code>diff</code> shows what <code>apply</code> would change without changing anything. Use it before every apply on a real cluster.</li>
+      </ul>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th></th><th>Imperative</th><th>Declarative</th></tr></thead>
+        <tbody>
+          <tr><td>Looks like</td><td><code>kubectl run</code>, <code>kubectl create deployment</code>, <code>kubectl scale</code></td><td><code>kubectl apply -f file.yaml</code></td></tr>
+          <tr><td>You say</td><td>do this step</td><td>make it look like this</td></tr>
+          <tr><td>Record of what you did</td><td>your shell history</td><td>a file in git</td></tr>
+          <tr><td>Best for</td><td>quick experiments</td><td>everything real</td></tr>
+        </tbody>
+      </table></div>
+
+      <p>A good bridge: let <code>kubectl</code> write the file for you, then edit and apply it.</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl create deployment web --image=nginx:1.27 --replicas=2 --dry-run=client -o yaml &gt; web-deploy.yaml
+kubectl apply -f web-deploy.yaml
+</code></pre></div>
+      <p><code>--dry-run=client</code> builds the object locally and prints it. <code>--dry-run=server</code> sends it to the API server, which validates it fully but stores nothing. The server version catches more mistakes.</p>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li><code>kubectl get pods</code> is a <code>GET</code> request. You can watch <code>kubectl</code> make it: add <code>-v=6</code> and it prints the HTTP calls. At <code>-v=8</code> you see the request and response bodies.</li>
+        <li>You can talk to the API with <code>curl</code>. <code>kubectl proxy</code> opens <code>localhost:8001</code> with your credentials already attached. Then <code>curl localhost:8001/api/v1/namespaces/default/pods</code> returns the same data as <code>kubectl get pods -o json</code>.</li>
+        <li><code>kubectl get --raw /api/v1/namespaces/default/pods</code> does the same without a proxy.</li>
+        <li>Shell tricks you already know still work: <code>kubectl get pods -o name | grep web</code>, <code>alias k=kubectl</code>, and tab-completion with <code>source &lt;(kubectl completion bash)</code> (or <code>zsh</code>).</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Tabs in YAML.</strong> They are not allowed. You get <code>error converting YAML to JSON</code> or a message about a found character that cannot start a token. Set your editor to insert spaces.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Wrong indentation that is still valid YAML.</strong> A <code>ports:</code> block indented one level too far or too little will often parse fine and then be rejected, or silently put the field somewhere else. When the cluster says <code>unknown field</code>, count the spaces.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"<code>kubectl get all</code> shows everything."</strong> It does not. It shows a fixed handful of kinds (Pods, Services, Deployments and a few more) in one namespace. ConfigMaps, Secrets, Ingresses, PVCs and custom resources are not included. Use <code>kubectl api-resources</code> and ask for the kind by name.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Editing live objects with <code>kubectl edit</code>, then applying the old file.</strong> The live object and your file drift apart, and the next <code>apply</code> quietly overwrites your edit. Treat the file as the truth. Edit the file, then apply.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Reusing <code>-o yaml</code> output as a manifest.</strong> It includes <code>status</code>, <code>uid</code>, <code>resourceVersion</code> and more. Some of that will make an apply fail or behave oddly. Start from <code>--dry-run=client -o yaml</code> instead.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Forgetting the <code>--</code> in <code>exec</code>.</strong> <code>kubectl exec web -- ls -l</code> is right. Without <code>--</code>, <code>kubectl</code> tries to read <code>-l</code> as its own flag.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p><code>kubectl delete -f file.yaml</code> deletes <strong>everything defined in that file</strong>. <code>kubectl delete -f ./manifests/</code> deletes everything in the folder. Run <code>kubectl diff</code> or <code>kubectl get -f ./manifests/</code> first to see what will be touched.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>Use the kind cluster from chapter 4 (context <code>kind-handbook</code>). Everything below is safe: it all lives in a namespace you delete at the end.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+# 1. know where you are
+kubectl config current-context
+kubectl config get-contexts
+
+# 2. a scratch namespace, and make it your default
+kubectl create namespace dev
+kubectl config set-context --current --namespace=dev
+
+# 3. save the Pod from this chapter as nginx-pod.yaml, then preview and apply it
+kubectl diff -f nginx-pod.yaml
+kubectl apply -f nginx-pod.yaml
+kubectl apply -f nginx-pod.yaml        # again: nothing should change
+
+# 4. try create on something that exists
+kubectl create -f nginx-pod.yaml       # should fail with AlreadyExists
+
+# 5. read it three ways
+kubectl get pod web -o wide
+kubectl get pod web -o yaml
+kubectl get pod web -o jsonpath='{.status.podIP}'
+
+# 6. let the cluster document itself
+kubectl explain pod.spec.containers.ports
+kubectl api-resources | head -20
+
+# 7. watch kubectl talk HTTP
+kubectl get pod web -v=6
+
+# 8. clean up, and put your default namespace back
+kubectl config set-context --current --namespace=default
+kubectl delete namespace dev
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>Step 3, second apply: it reports the Pod as <code>unchanged</code>. That is "declarative" in one line.</li>
+        <li>Step 4: <code>AlreadyExists</code>. That is the difference between <code>create</code> and <code>apply</code>.</li>
+        <li>Step 5, the YAML output: find the <code>status:</code> block, and fields you never wrote (<code>uid</code>, <code>nodeName</code>).</li>
+        <li>Step 7: lines starting with <code>GET https://…/api/v1/namespaces/dev/pods/web</code>. That is all <code>kubectl</code> is doing.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>What's the difference between <code>kubectl apply</code> and <code>kubectl create</code>?</summary>
+          <div class="answer">
+            <p><code>create</code> is imperative. It makes a new object and fails if it already exists. <code>apply</code> is declarative. I give it the state I want, and it creates the object if it's missing or updates it if it differs, so I can run it repeatedly. For anything real I use <code>apply</code>, with the file in git, and I run <code>kubectl diff</code> first to see what will change.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How does <code>kubectl</code> know which cluster to talk to?</summary>
+          <div class="answer">
+            <p>From the kubeconfig, normally <code>~/.kube/config</code>, or whatever <code>KUBECONFIG</code> points to. It holds clusters, users and contexts. A context ties one cluster to one user and a default namespace. The current context decides where commands go. I check it with <code>kubectl config current-context</code> before anything destructive.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What are the main top-level fields of a Kubernetes manifest?</summary>
+          <div class="answer">
+            <p><code>apiVersion</code> and <code>kind</code> say what type of object it is. <code>metadata</code> holds the name, namespace and labels. <code>spec</code> is what I want. And there's <code>status</code>, which the cluster fills in and I never write. A few kinds, like ConfigMap and Secret, have <code>data</code> instead of <code>spec</code>.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What's the difference between <code>spec</code> and <code>status</code>?</summary>
+          <div class="answer">
+            <p><code>spec</code> is desired state, written by me. <code>status</code> is observed state, written by the cluster. Controllers keep comparing them and acting on the gap. If I ask for three replicas and <code>status</code> says two are ready, a controller has work to do. That comparison loop is how Kubernetes works.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>You don't remember a field name. How do you find it without a browser?</summary>
+          <div class="answer">
+            <p><code>kubectl explain</code>. For example <code>kubectl explain pod.spec.containers</code> lists the fields, with descriptions. Adding <code>--recursive</code> gives the whole tree. And <code>kubectl api-resources</code> tells me the kind, its group and whether it's namespaced, which gives me the <code>apiVersion</code>. It's the cluster's own built-in documentation, and it matches the exact version I'm running.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Check</strong> the context before you change anything. <strong>Generate</strong> YAML with <code>--dry-run=client -o yaml</code>. <strong>Preview</strong> with <code>kubectl diff</code>. <strong>Keep</strong> the file as the truth and apply it, instead of editing live objects. <strong>Ask</strong> the cluster with <code>kubectl explain</code> before you search the web. And when <code>kubectl</code> confuses you, add <code>-v=6</code> and watch the request it makes.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
