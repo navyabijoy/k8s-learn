@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scheduling: taints, tolerations, affinity · Kubernetes Handbook</title>
+<meta name="description" content="By default the scheduler puts a Pod wherever it fits. Most of the time that is exactly right. Sometimes it is not: the database must be on the fast disks, the batch jobs must stay off the web nodes, a">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="15">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Scheduling: taints, tolerations, affinity</h1>
+            <p class="sub">Choosing which node a Pod lands on</p>
+          </div>
+          <span class="pill">Section 15</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">By default the scheduler puts a Pod wherever it fits. Most of the time that is exactly right. Sometimes it is not: the database must be on the fast disks, the batch jobs must stay off the web nodes, and three replicas must not all land on one machine. This chapter is the small set of controls for that, and the one rule that keeps them straight: <strong>taints push away, affinity pulls toward</strong>.</p>
+
+      <h2>The problem</h2>
+      <p>Picture a cluster with five nodes: two with SSDs, one with a GPU, one reserved for a team, and one control-plane node. Four situations:</p>
+      <ul>
+        <li>The database needs SSD nodes.</li>
+        <li>The machine-learning job needs the GPU node, and nothing else should waste it.</li>
+        <li>Your three <code>web</code> replicas all landed on the same node. When it dies, the site goes down.</li>
+        <li>You need to reboot a node for a kernel update without dropping anyone's traffic.</li>
+      </ul>
+      <p>The scheduler cannot know any of this. You have to tell it.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>The scheduler works in two steps. It <strong>filters out</strong> nodes that cannot run the Pod, then <strong>scores</strong> the rest and picks the best. Every control in this chapter changes the filter or the score.</p>
+      </div>
+
+      <div class="flow"><span>all nodes</span><i>→</i><span>Filter: drop nodes that cannot run it (requests, taints, selectors)</span><i>→</i><span>Score: rank the rest (spread, preferences)</span><i>→</i><span>Bind to the winner</span></div>
+
+      <div class="cards">
+        <div class="card"><span class="tag">nodeSelector</span><p>The Pod says "only nodes with this label". The simplest pull.</p></div>
+        <div class="card"><span class="tag">Affinity</span><p>A richer pull. Required or just preferred. Toward certain nodes, or toward or away from other Pods.</p></div>
+        <div class="card"><span class="tag">Taint (on a node)</span><p>A "staff only" sign on a door. Keeps Pods out unless they have the right badge.</p></div>
+        <div class="card"><span class="tag">Toleration (on a Pod)</span><p>The badge. It <em>allows</em> a Pod through the door. It does <strong>not</strong> make it go there.</p></div>
+      </div>
+
+      <h2>nodeSelector: the simple pull</h2>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get nodes --show-labels
+kubectl label node handbook-worker disktype=ssd
+kubectl get nodes -L disktype
+</code></pre></div>
+      <p>Nodes already carry labels like <code>kubernetes.io/hostname</code> and, on clouds, <code>topology.kubernetes.io/zone</code>. You add your own with <code>kubectl label</code>, as in chapter 8.</p>
+      <div class="code" data-lang="yaml"><pre><code>
+spec:
+  nodeSelector:
+    disktype: ssd
+  containers:
+    - name: db
+      image: postgres:17
+</code></pre></div>
+      <p>The Pod can only go to nodes labelled <code>disktype=ssd</code>. If there are none, it stays <code>Pending</code>.</p>
+
+      <h2>Node affinity: richer pulls</h2>
+      <div class="code" data-lang="yaml"><pre><code>
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: disktype
+                operator: In
+                values: [ssd, nvme]
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 80
+          preference:
+            matchExpressions:
+              - key: topology.kubernetes.io/zone
+                operator: In
+                values: [zone-a]
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+requiredDuringScheduling...     HARD rule: if no node matches, the Pod stays Pending
+  matchExpressions: disktype In [ssd, nvme]
+preferredDuringScheduling...    SOFT rule: add points to matching nodes, but go elsewhere if needed
+  weight: 80                    how much it matters, 1 to 100
+...IgnoredDuringExecution       if the node's labels change AFTER the Pod is running, leave the Pod alone
+</code></pre></div>
+      <p>The operators are <code>In</code>, <code>NotIn</code>, <code>Exists</code>, <code>DoesNotExist</code>, <code>Gt</code> and <code>Lt</code>. The long names look like a mouthful, but they only say <strong>how hard</strong> the rule is and <strong>when</strong> it is checked.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th></th><th><code>nodeSelector</code></th><th>node affinity</th></tr></thead>
+        <tbody>
+          <tr><td>Simple equality</td><td>yes</td><td>yes</td></tr>
+          <tr><td><code>In</code>, <code>NotIn</code>, <code>Exists</code>…</td><td>no</td><td>yes</td></tr>
+          <tr><td>"Prefer, but do not insist"</td><td>no</td><td>yes</td></tr>
+        </tbody>
+      </table></div>
+      <p>Use <code>nodeSelector</code> when one label is enough. Use affinity when you want "either of these", or "this if possible".</p>
+
+      <h2>Pod anti-affinity and spreading</h2>
+      <p>Now the third problem: three replicas on one node. You want them <em>apart</em>.</p>
+
+      <h3>Anti-affinity: "not with my own kind"</h3>
+      <div class="code" data-lang="yaml"><pre><code>
+spec:
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app: web
+            topologyKey: kubernetes.io/hostname
+</code></pre></div>
+      <p>Read it as: "prefer not to share a <code>hostname</code> (a node) with another Pod labelled <code>app: web</code>". <code>topologyKey</code> says what "together" means: the same node (<code>kubernetes.io/hostname</code>), the same zone (<code>topology.kubernetes.io/zone</code>), and so on.</p>
+      <p>With <code>required...</code> instead, it becomes a hard rule. Careful: if you ask for five replicas on three nodes, two Pods can never be placed and stay <code>Pending</code>.</p>
+
+      <h3>Topology spread constraints: the modern way to spread</h3>
+      <div class="code" data-lang="yaml"><pre><code>
+spec:
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app: web
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+maxSkew: 1                           the difference between the fullest and emptiest node may be at most 1 Pod
+topologyKey: ...hostname             spread across nodes (use ...zone to spread across zones)
+whenUnsatisfiable: ScheduleAnyway    DoNotSchedule = hard rule, ScheduleAnyway = best effort
+labelSelector: app=web               which Pods to count
+</code></pre></div>
+      <p>With three nodes and six replicas this gives two per node. Unlike anti-affinity it handles "more replicas than nodes" gracefully, and it works at larger scale. Prefer it for spreading across nodes and zones.</p>
+
+      <h2>Taints and tolerations: the push</h2>
+      <p>Affinity lives on the <em>Pod</em> and pulls it toward nodes. A <strong>taint</strong> lives on the <em>node</em> and pushes Pods away, unless they tolerate it.</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl taint nodes handbook-worker dedicated=gpu:NoSchedule
+kubectl describe node handbook-worker | grep -i taint
+kubectl taint nodes handbook-worker dedicated=gpu:NoSchedule-
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+kubectl taint nodes handbook-worker dedicated=gpu:NoSchedule
+                    │               │         │   │
+                    │               │         │   └─ effect: what the taint does
+                    │               │         └───── value (optional)
+                    │               └─────────────── key
+                    └─────────────────────────────── which node
+...:NoSchedule-     the trailing dash REMOVES the taint
+</code></pre></div>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th>Effect</th><th>New Pods without a toleration</th><th>Pods already running</th></tr></thead>
+        <tbody>
+          <tr><td><code>NoSchedule</code></td><td>will not be scheduled here</td><td>left alone</td></tr>
+          <tr><td><code>PreferNoSchedule</code></td><td>avoided if possible</td><td>left alone</td></tr>
+          <tr><td><code>NoExecute</code></td><td>will not be scheduled here</td><td><strong>evicted</strong>, after <code>tolerationSeconds</code> if given</td></tr>
+        </tbody>
+      </table></div>
+
+      <p>A Pod that is allowed on that node carries a matching toleration:</p>
+      <div class="code" data-lang="yaml"><pre><code>
+spec:
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: gpu
+      effect: NoSchedule
+</code></pre></div>
+      <p><code>operator: Exists</code> matches the key with any value. A toleration with only <code>operator: Exists</code> and nothing else tolerates every taint. System Pods sometimes do that.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p><strong>A toleration only lifts a ban. It does not create a pull.</strong> A Pod that tolerates <code>dedicated=gpu</code> may still land on any other node. To make a Pod land <em>only</em> on the GPU node and keep everyone else off it, you need both halves: a <strong>taint</strong> on the node (keeps others out) and a <strong>nodeSelector or affinity</strong> on the Pod (pulls it there), plus the <strong>toleration</strong> (lets it in).</p>
+      </div>
+
+      <div class="code" data-lang="yaml" data-file="gpu-job-pod.yaml"><pre><code>
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-job
+spec:
+  nodeSelector:
+    dedicated: gpu
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: gpu
+      effect: NoSchedule
+  containers:
+    - name: job
+      image: busybox:1.37
+      command: ["sleep", "3600"]
+</code></pre></div>
+      <p>Label and taint the node with the same words (<code>kubectl label node X dedicated=gpu</code> and <code>kubectl taint nodes X dedicated=gpu:NoSchedule</code>), and this is the "dedicated node" pattern: others are kept out, this Pod is drawn in.</p>
+
+      <h3>Taints you already have</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Taint</th><th>Put there by</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>node-role.kubernetes.io/control-plane:NoSchedule</code></td><td>cluster setup</td><td>keep ordinary Pods off control-plane nodes (chapter 3)</td></tr>
+          <tr><td><code>node.kubernetes.io/not-ready</code>, <code>unreachable</code> (<code>NoExecute</code>)</td><td>the node controller</td><td>the node is unhealthy. Pods get a default 300 s toleration, then are evicted (chapter 13)</td></tr>
+          <tr><td><code>node.kubernetes.io/unschedulable</code></td><td><code>kubectl cordon</code></td><td>the node is closed to new Pods</td></tr>
+        </tbody>
+      </table></div>
+
+      <h2>Maintenance: cordon, drain, and Pod disruption budgets</h2>
+      <p>This is the fourth problem, and it is the one you will do in real life.</p>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl cordon handbook-worker
+kubectl drain handbook-worker --ignore-daemonsets --delete-emptydir-data
+kubectl uncordon handbook-worker
+</code></pre></div>
+      <ul>
+        <li><code>cordon</code> marks the node unschedulable. New Pods stay away. Existing ones keep running.</li>
+        <li><code>drain</code> does a cordon, then <strong>evicts</strong> the Pods so their controllers recreate them elsewhere. <code>--ignore-daemonsets</code> is needed because a DaemonSet Pod would just come back. <code>--delete-emptydir-data</code> acknowledges that <code>emptyDir</code> data on that node will be lost.</li>
+        <li><code>uncordon</code> opens the node again after maintenance.</li>
+      </ul>
+      <p>On Linux you would stop services, reboot, start them. Draining is the cluster-aware version: it moves the work away first.</p>
+
+      <h3>Don't drain everyone at once</h3>
+      <div class="code" data-lang="yaml" data-file="web-pdb.yaml"><pre><code>
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: web
+</code></pre></div>
+      <p>A <strong>PodDisruptionBudget</strong> (PDB) says "during voluntary disruptions like a drain, keep at least 2 of these Pods running". <code>kubectl drain</code> respects it: it evicts one Pod, waits for the replacement to be ready, then continues. You can also write <code>maxUnavailable: 1</code>. A PDB does not protect against a node crashing. It only governs evictions that Kubernetes itself carries out.</p>
+
+      <h3>Priority</h3>
+      <p>When the cluster is full, not all Pods are equal. A <strong>PriorityClass</strong> gives a Pod a number. A higher-priority Pod that cannot be scheduled can <strong>preempt</strong>: evict lower-priority Pods to make room. System components use the built-in classes <code>system-cluster-critical</code> and <code>system-node-critical</code>. For your own, use a few classes (for example <code>high</code>, <code>default</code>, <code>batch</code>), not dozens.</p>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li><strong>Pinning to a node</strong> is like <code>taskset</code> pinning a process to a CPU core, or deciding which server in your fleet hosts a service. <code>nodeSelector</code> says which.</li>
+        <li><strong>Draining a node</strong> is stopping services cleanly before a reboot, the same care as the Linux handbook's advice to have a plan before <code>apt upgrade</code> on production. <code>cordon</code> is "stop taking new work", <code>drain</code> is "finish and move your work", <code>uncordon</code> is "back in service".</li>
+        <li><strong>Priority and preemption</strong> are the cluster's version of <code>nice</code> values: who gets the CPU, and who is killed first when resources run out. QoS classes (chapter 13) and PriorityClasses work together.</li>
+        <li><strong>Labels on nodes</strong> are the same sticky notes as chapter 8, on machines. A node's <code>kubernetes.io/hostname</code> is the output of the <code>hostname</code> command from the Linux handbook.</li>
+        <li><strong>A taint is a file permission for a machine.</strong> A directory with <code>chmod 700</code> keeps everyone out except its owner. A taint keeps every Pod out except those with the matching toleration.</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"I added a toleration, so my Pod will run on the tainted node."</strong> It <em>may</em>. Nothing pulls it there. Add a <code>nodeSelector</code> or affinity too.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>A selector or affinity that matches no node.</strong> The Pod stays <code>Pending</code>, and the scheduler's event says no node matched the Pod's node affinity or selector. Compare the Pod's wording with <code>kubectl get nodes --show-labels</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Required anti-affinity with more replicas than nodes.</strong> Replicas beyond the node count can never be placed. Use <code>preferred</code> anti-affinity or a topology spread constraint instead.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"<code>cordon</code> and <code>drain</code> are the same."</strong> <code>cordon</code> only stops new Pods. Running Pods stay. <code>drain</code> also evicts them.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Drain is stuck.</strong> The usual causes: a PodDisruptionBudget that cannot be satisfied (for example <code>minAvailable</code> equals the replica count), a DaemonSet Pod (add <code>--ignore-daemonsets</code>), or a Pod with local <code>emptyDir</code> data.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Forgetting that <code>NoExecute</code> evicts.</strong> Adding it to a node with running Pods removes any Pod that does not tolerate it. <code>NoSchedule</code> does not.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Using <code>nodeName</code> to skip the scheduler.</strong> It bypasses every check, including taints and resource requests. Fine for debugging, wrong for real workloads.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p>Draining the only node that runs a single-replica app, with no PodDisruptionBudget, <strong>is an outage</strong>. Check <code>kubectl get pods -A -o wide</code> for what is on the node, and make sure important apps have two or more replicas and a PDB before you drain.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>This needs the <strong>three-node kind cluster</strong> from chapter 4. Its nodes are <code>handbook-control-plane</code>, <code>handbook-worker</code> and <code>handbook-worker2</code>. Check yours with <code>kubectl get nodes</code> and adjust the names.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+kubectl create namespace dev
+kubectl get nodes --show-labels
+
+# ---- 1. nodeSelector ----
+kubectl label node handbook-worker disktype=ssd
+kubectl run on-ssd -n dev --image=busybox:1.37 --overrides='{"spec":{"nodeSelector":{"disktype":"ssd"},"containers":[{"name":"on-ssd","image":"busybox:1.37","command":["sleep","3600"]}]}}'
+kubectl get pod on-ssd -n dev -o wide                 # NODE is handbook-worker
+kubectl run nowhere -n dev --image=busybox:1.37 --overrides='{"spec":{"nodeSelector":{"disktype":"floppy"},"containers":[{"name":"nowhere","image":"busybox:1.37","command":["sleep","3600"]}]}}'
+kubectl get pod nowhere -n dev                        # Pending
+kubectl describe pod nowhere -n dev | tail -4         # the scheduler says why
+
+# ---- 2. taint and toleration ----
+kubectl taint nodes handbook-worker2 dedicated=gpu:NoSchedule
+kubectl create deployment spread -n dev --image=nginx:1.27 --replicas=6
+kubectl get pods -n dev -l app=spread -o wide         # none on handbook-worker2
+kubectl label node handbook-worker2 dedicated=gpu
+kubectl apply -n dev -f gpu-job-pod.yaml
+kubectl get pod gpu-job -n dev -o wide                # on handbook-worker2, the only node that allows and attracts it
+
+# ---- 3. cordon and drain ----
+kubectl taint nodes handbook-worker2 dedicated=gpu:NoSchedule-
+kubectl cordon handbook-worker
+kubectl get nodes                                     # SchedulingDisabled
+kubectl drain handbook-worker --ignore-daemonsets --delete-emptydir-data
+kubectl get pods -n dev -o wide                       # nothing left on handbook-worker
+kubectl uncordon handbook-worker
+
+# ---- clean up ----
+kubectl delete namespace dev
+kubectl label node handbook-worker disktype-
+kubectl label node handbook-worker2 dedicated-
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>Part 1: <code>on-ssd</code> lands on <code>handbook-worker</code>. <code>nowhere</code> stays <code>Pending</code>, and its event says the node(s) did not match the Pod's node selector.</li>
+        <li>Part 2: none of the six <code>spread</code> Pods go to the tainted node. <code>gpu-job</code> does, because it tolerates the taint <em>and</em> selects the label.</li>
+        <li>Part 3: after <code>cordon</code>, the node shows <code>SchedulingDisabled</code>. After <code>drain</code>, the Deployment has recreated its Pods on the other nodes. Pods that were created by a bare <code>kubectl run</code> (like <code>on-ssd</code>) would be deleted and not recreated, because nothing owns them. In real life, own your Pods with a controller.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>What's the difference between taints and affinity?</summary>
+          <div class="answer">
+            <p>Direction. Affinity and <code>nodeSelector</code> are on the Pod and attract it toward certain nodes. Taints are on the node and repel Pods, unless a Pod has a matching toleration. A toleration only permits, it doesn't attract. So to reserve nodes for one workload I combine a taint to keep others out, a toleration so the workload may enter, and a nodeSelector or affinity so it actually goes there.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Explain the taint effects.</summary>
+          <div class="answer">
+            <p>NoSchedule means new Pods without a toleration won't be placed there, and running Pods are left alone. PreferNoSchedule is a soft version: avoided if possible. NoExecute also stops scheduling and additionally evicts running Pods that don't tolerate it, optionally after <code>tolerationSeconds</code>. The node controller uses NoExecute for not-ready and unreachable nodes, which is why Pods get moved off dead nodes after about five minutes by default.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How do you make sure replicas don't all land on one node, or in one zone?</summary>
+          <div class="answer">
+            <p>I'd use topology spread constraints, with the topology key for the node or the zone, a maxSkew of one, and whenUnsatisfiable set to DoNotSchedule for a hard rule or ScheduleAnyway for best effort. Pod anti-affinity can do it too, but a required anti-affinity leaves replicas Pending if there are more replicas than nodes, and it's heavier at scale. Topology spread handles that case better.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How do you safely take a node out for maintenance?</summary>
+          <div class="answer">
+            <p>I cordon it so nothing new lands there, then drain it, which evicts the Pods so their controllers recreate them on other nodes. I use <code>--ignore-daemonsets</code> and, if needed, <code>--delete-emptydir-data</code>. Before that I make sure important apps have more than one replica and a PodDisruptionBudget, so the drain evicts them gradually and never drops below the minimum. After maintenance I uncordon the node.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What is a PodDisruptionBudget, and what doesn't it protect against?</summary>
+          <div class="answer">
+            <p>It says how many Pods of an app must stay available, or how many may be unavailable, during voluntary disruptions, such as a drain or a cluster upgrade. The eviction API respects it, so a drain waits until the minimum would still be met. It doesn't protect against involuntary failures like a node crashing or an out-of-memory kill. For those I rely on replicas, spread across nodes and zones.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Remember</strong> "taints push, affinity pulls". <strong>Use</strong> a toleration plus a selector together. <strong>Prefer</strong> topology spread to anti-affinity for spreading. <strong>Give</strong> important apps two or more replicas and a PodDisruptionBudget. <strong>Cordon</strong>, then <strong>drain</strong>, then <strong>uncordon</strong>. And when a Pod is <code>Pending</code>, read the scheduler's event first: it names the filter that rejected every node.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
