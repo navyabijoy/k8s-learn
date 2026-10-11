@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Helm · Kubernetes Handbook</title>
+<meta name="description" content="By now one app takes a Deployment, a Service, a ConfigMap, maybe an Ingress, and a few more files. Now you want it in dev, staging and production, with different numbers in each. Copying and editing Y">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="18">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Helm</h1>
+            <p class="sub">Packaging YAML so you can install it twice</p>
+          </div>
+          <span class="pill">Section 18</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">By now one app takes a Deployment, a Service, a ConfigMap, maybe an Ingress, and a few more files. Now you want it in dev, staging and production, with different numbers in each. Copying and editing YAML does not scale. Helm is the package manager that fixes that, and if you understood <code>apt</code> in the Linux handbook, you already understand most of it.</p>
+
+      <h2>The problem</h2>
+      <p>You have five YAML files for <code>web</code>. In dev you want 1 replica and image tag <code>1.27</code>. In production you want 5 replicas and a different tag, and a bigger memory limit. You copy the folder, edit three numbers, and now you have two folders to keep in step. Add staging. Add a second app. Soon nobody knows which copy is correct.</p>
+      <p>You also want to <em>install other people's software</em>: a monitoring stack, an Ingress controller, a database. Those come as thirty YAML files. You would rather type one command.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>A <strong>Helm chart</strong> is a package of templated Kubernetes YAML plus default values. You install it with your own values, and Helm renders the templates, applies them, and remembers the result as a <strong>release</strong> you can upgrade or roll back.</p>
+      </div>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th>Helm</th><th>Plain words</th><th><code>apt</code> cousin</th></tr></thead>
+        <tbody>
+          <tr><td>chart</td><td>a package: templates plus default values</td><td>a <code>.deb</code> package</td></tr>
+          <tr><td>repository</td><td>a server hosting charts</td><td>an entry in <code>/etc/apt/sources.list</code></td></tr>
+          <tr><td>release</td><td>one installed copy of a chart, with a name</td><td>an installed package (but you can install the same chart twice under two names)</td></tr>
+          <tr><td>values</td><td>the settings you choose</td><td>the config in <code>/etc</code></td></tr>
+          <tr><td>revision</td><td>a numbered version of a release</td><td>a package version you can go back to</td></tr>
+        </tbody>
+      </table></div>
+
+      <h2>The commands, and the <code>apt</code> you already know</h2>
+      <div class="code" data-lang="bash"><pre><code>
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+helm search repo prometheus-community
+helm show values prometheus-community/kube-prometheus-stack
+helm install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace
+helm list -A
+helm upgrade monitoring prometheus-community/kube-prometheus-stack -n monitoring -f my-values.yaml
+helm rollback monitoring 1 -n monitoring
+helm uninstall monitoring -n monitoring
+</code></pre></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Helm command</th><th>What it does</th><th><code>apt</code> command</th></tr></thead>
+        <tbody>
+          <tr><td><code>helm repo add NAME URL</code></td><td>tell Helm about a chart repository</td><td>add a line to <code>sources.list</code></td></tr>
+          <tr><td><code>helm repo update</code></td><td><strong>refresh the list of available charts.</strong> Does not touch your releases.</td><td><code>apt update</code></td></tr>
+          <tr><td><code>helm search repo WORD</code></td><td>find charts</td><td><code>apt search</code></td></tr>
+          <tr><td><code>helm show values CHART</code></td><td>see every setting a chart offers</td><td><code>apt show</code></td></tr>
+          <tr><td><code>helm install RELEASE CHART</code></td><td>install, and name the install</td><td><code>apt install</code></td></tr>
+          <tr><td><code>helm upgrade RELEASE CHART</code></td><td>change an installed release</td><td><code>apt upgrade</code></td></tr>
+          <tr><td><code>helm rollback RELEASE N</code></td><td>go back to revision N</td><td>(no equivalent)</td></tr>
+          <tr><td><code>helm uninstall RELEASE</code></td><td>remove it</td><td><code>apt remove</code></td></tr>
+          <tr><td><code>helm list</code> / <code>helm status</code></td><td>what is installed, and its state</td><td><code>apt list --installed</code></td></tr>
+        </tbody>
+      </table></div>
+      <p>And the mistake from the Linux handbook comes back unchanged: <strong><code>helm repo update</code> does not update your software.</strong> It only refreshes the catalogue. Your releases stay as they are until you run <code>helm upgrade</code>.</p>
+      <ul>
+        <li><code>-n monitoring --create-namespace</code> installs into that namespace and creates it if missing. Releases belong to a namespace, so <code>helm list</code> shows only the current one. <code>-A</code> shows all.</li>
+        <li><code>helm install monitoring ...</code>: <code>monitoring</code> is <em>your</em> name for this install. Install the same chart again as <code>monitoring-2</code> and you get a second, separate release.</li>
+      </ul>
+
+      <h2>What is inside a chart</h2>
+      <div class="code" data-lang="tree"><pre><code>
+web/
+├── Chart.yaml          name, chart version, appVersion, description
+├── values.yaml         the defaults for every setting
+├── charts/             sub-charts this chart depends on
+└── templates/
+    ├── deployment.yaml     Kubernetes YAML, with {{ ... }} holes in it
+    ├── service.yaml
+    ├── _helpers.tpl        reusable snippets (names, labels)
+    └── NOTES.txt           text printed after install
+</code></pre></div>
+      <p>Two files hold the idea. <code>values.yaml</code> holds the choices:</p>
+      <div class="code" data-lang="yaml" data-file="values.yaml"><pre><code>
+replicaCount: 2
+image:
+  repository: nginx
+  tag: "1.27"
+service:
+  port: 80
+resources:
+  requests:
+    memory: 64Mi
+</code></pre></div>
+      <p>And a template uses them. Everything in <code>{{ }}</code> is filled in when Helm renders:</p>
+      <div class="code" data-lang="yaml" data-file="templates/deployment.yaml"><pre><code>
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-web
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-web
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-web
+    spec:
+      containers:
+        - name: nginx
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports:
+            - containerPort: 80
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+{{ .Release.Name }}              the name you gave: helm install THIS-NAME ...
+{{ .Values.replicaCount }}       a value from values.yaml (or one you override)
+{{ .Chart.Name }}                the chart's name, from Chart.yaml
+{{- toYaml ... | nindent 12 }}   print a whole block of values as YAML, indented 12 spaces
+{{ if .Values.x }} ... {{ end }} include this part only when a value is set
+{{ range .Values.list }}         repeat for each item
+</code></pre></div>
+      <p>Those few pieces cover most templates you will read. Templates are Go's template language with extras. You do not need to master it. You need to <em>read</em> it.</p>
+
+      <h2>Values: three layers</h2>
+      <div class="code" data-lang="bash"><pre><code>
+helm install demo ./web -n dev
+helm install demo ./web -n dev -f prod-values.yaml
+helm install demo ./web -n dev -f prod-values.yaml --set replicaCount=10
+</code></pre></div>
+      <div class="flow"><span>chart's values.yaml</span><i>←</i><span>-f file(s), later files win</span><i>←</i><span>--set on the command line wins</span></div>
+      <ul>
+        <li>The first uses the chart's defaults.</li>
+        <li>The second overlays your file. Keep one file per environment (<code>dev-values.yaml</code>, <code>prod-values.yaml</code>) in git. That replaces the folder-copying problem.</li>
+        <li>The third overrides one value from the command line. Good for quick tests, bad as the only record of what you did.</li>
+      </ul>
+
+      <h2>Look before you install</h2>
+      <div class="code" data-lang="bash"><pre><code>
+helm lint ./web
+helm template demo ./web -f prod-values.yaml
+helm install demo ./web -n dev --dry-run
+helm get values demo -n dev
+helm get manifest demo -n dev
+</code></pre></div>
+      <ul>
+        <li><code>lint</code> checks the chart for mistakes.</li>
+        <li><code>template</code> renders the YAML on your machine and prints it. <strong>It needs no cluster.</strong> This is the most useful debugging command in Helm: you see exactly what would be sent.</li>
+        <li><code>--dry-run</code> goes further and asks the cluster to validate, without installing.</li>
+        <li><code>get values</code> shows the values you gave an installed release. <code>get manifest</code> shows the YAML it applied.</li>
+      </ul>
+
+      <h2>Upgrades, history and rollback</h2>
+      <div class="code" data-lang="bash"><pre><code>
+helm upgrade demo ./web -n dev --set replicaCount=3
+helm history demo -n dev
+helm rollback demo 1 -n dev
+helm upgrade --install demo ./web -n dev -f prod-values.yaml
+</code></pre></div>
+      <ul>
+        <li><code>upgrade</code> re-renders with new inputs and applies the difference. It creates a new <strong>revision</strong>.</li>
+        <li><code>history</code> lists revisions, with status and a description.</li>
+        <li><code>rollback demo 1</code> re-applies revision 1 as a new revision. (It does not delete the later ones.)</li>
+        <li><code>upgrade --install</code> installs if it is missing, upgrades if present. The one command to put in a pipeline.</li>
+      </ul>
+      <p>Behind the scenes Helm saves each revision as a <strong>Secret</strong> in the release's namespace, which is how it remembers history with no database of its own. <code>kubectl get secrets -n dev</code> shows them, with names starting <code>sh.helm.release.v1</code>.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>A Helm rollback re-applies the old <strong>Kubernetes objects</strong>. It does not undo what the application did: a database migration that already ran, or data written to a volume, stays. Rollback rolls back YAML, not state.</p>
+      </div>
+
+      <h2>Helm or Kustomize?</h2>
+      <p>Helm is not the only way. <strong>Kustomize</strong> is built into <code>kubectl</code> (<code>kubectl apply -k</code>). Instead of templates with holes, it takes plain YAML and applies <em>patches</em> on top, per environment.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th></th><th>Helm</th><th>Kustomize</th></tr></thead>
+        <tbody>
+          <tr><td>Approach</td><td>templates and values</td><td>plain YAML plus patches (overlays)</td></tr>
+          <tr><td>Install other people's software</td><td><strong>yes</strong>: the usual way</td><td>awkward</td></tr>
+          <tr><td>Versioned packages and releases</td><td>yes, with history and rollback</td><td>no: it just renders YAML</td></tr>
+          <tr><td>Readability</td><td>templates can get hard to read</td><td>always valid YAML</td></tr>
+          <tr><td>Best for</td><td>third-party software, shared packages</td><td>your own app across environments</td></tr>
+        </tbody>
+      </table></div>
+      <p>They are often combined. GitOps tools such as Argo CD and Flux can render a Helm chart and apply it, so the cluster follows what is in git. Charts can also be stored in OCI registries, the same place as container images: <code>helm install demo oci://registry.example.com/charts/web --version 1.2.0</code>.</p>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li><strong>The whole chapter is the package management chapter.</strong> Repository, update, install, upgrade, remove, search, show. If someone asks you to explain Helm, start with <code>apt</code>.</li>
+        <li><strong><code>values.yaml</code> is a config file in <code>/etc</code></strong>, and <code>-f prod-values.yaml</code> is "use this config file instead".</li>
+        <li><strong>The upgrade warning from the Linux handbook applies:</strong> <code>apt upgrade</code> can break a service, so have a rollback plan on production. <code>helm upgrade</code> can change a database version, so read <code>helm diff</code> or <code>helm template</code> first. Helm gives you <code>rollback</code>, but only for the YAML.</li>
+        <li><strong><code>helm template</code> is a dry run</strong> in the spirit of <code>nginx -t</code>: check the config before you apply it.</li>
+        <li><strong>"Test, then reload"</strong>: lint, template, dry-run, then install.</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"<code>helm repo update</code> upgrades my apps."</strong> It only refreshes the chart list. Releases change only on <code>helm upgrade</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Not pinning the chart version.</strong> Without <code>--version</code>, <code>helm upgrade</code> may pull a newer chart with different defaults. Pin it, and change it on purpose.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Upgrading without your values.</strong> If you run <code>helm upgrade</code> and forget <code>-f prod-values.yaml</code>, Helm uses the chart defaults and throws away your earlier <code>--set</code> choices. Keep values in files and pass them every time, or use <code>--reuse-values</code> knowingly.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Editing resources by hand.</strong> <code>kubectl edit</code> on something Helm owns creates drift. The next <code>helm upgrade</code> may overwrite it or behave strangely. Change values, not live objects.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>A typo in a value name.</strong> If you write <code>replicaCout: 3</code> Helm accepts it and ignores it silently, unless the chart ships a values schema. Check with <code>helm get values</code> and <code>helm template</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Forgetting the namespace.</strong> <code>helm list</code> shows only one namespace. A release you cannot see is usually in another. Use <code>helm list -A</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>CRDs and Helm.</strong> Custom resource definitions (chapter 19) in a chart's <code>crds/</code> folder are installed once and <strong>not upgraded or deleted</strong> by Helm. When a chart's CRDs change, you must apply them yourself.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Putting passwords in a values file in git.</strong> Same rule as Secrets (chapter 11): use an external store, SOPS, or Sealed Secrets.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p><code>helm uninstall</code> removes everything the release created: Deployments, Services, ConfigMaps. PersistentVolumeClaims made by a StatefulSet's templates stay, but anything else, including data in <code>emptyDir</code>, goes. And <code>helm upgrade</code> on a database chart can move the database to a new major version. Read the chart's notes and run <code>helm template</code> first.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>You need Helm installed (<code>brew install helm</code> on macOS) and the kind cluster for the second half. The first half needs no cluster at all. Flags change between Helm major versions, so if one is rejected, run <code>helm &lt;command&gt; --help</code>.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+# ---- no cluster needed ----
+helm version
+helm create web                       # a starter chart, with sensible files
+ls -R web | head -30
+helm lint ./web
+helm template demo ./web --set image.tag=1.27 | head -60
+
+# ---- with a cluster ----
+helm install demo ./web -n dev --create-namespace --set image.tag=1.27
+helm list -n dev
+kubectl get all -n dev
+kubectl get secrets -n dev                           # the release is stored here
+
+helm upgrade demo ./web -n dev --set image.tag=1.27 --set replicaCount=3
+kubectl get pods -n dev
+helm history demo -n dev
+helm get values demo -n dev
+
+helm rollback demo 1 -n dev
+helm history demo -n dev                             # revision 3 is a copy of revision 1
+kubectl get pods -n dev
+
+helm uninstall demo -n dev
+kubectl delete namespace dev
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li><code>helm create</code> shows the folder layout from this chapter. Open <code>values.yaml</code> and <code>templates/deployment.yaml</code> and find the <code>{{ }}</code> pieces.</li>
+        <li><code>helm template</code> prints plain Kubernetes YAML with the holes filled in. Change a <code>--set</code> value and watch the output change.</li>
+        <li>After the upgrade, the Deployment has three replicas, and <code>history</code> shows two revisions.</li>
+        <li>After <code>rollback</code>, <code>history</code> shows a <em>third</em> revision whose description says it is a rollback to 1. Replicas go back to one.</li>
+        <li>The <code>sh.helm.release.v1...</code> Secrets are Helm's memory.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>What is Helm, and what problem does it solve?</summary>
+          <div class="answer">
+            <p>Helm is the package manager for Kubernetes. A chart bundles templated manifests with default values, and a release is one installed instance of a chart. It solves two things: parameterising the same manifests for different environments without copying folders, and installing third-party software like monitoring stacks with one command. It also records revisions, so I can upgrade and roll back a release as a unit.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How do values get merged when you install a chart?</summary>
+          <div class="answer">
+            <p>In layers. The chart's own <code>values.yaml</code> is the base. Files passed with <code>-f</code> override it, and with several files the later ones win. <code>--set</code> on the command line overrides everything. I keep one values file per environment in git, and pass it on every install and upgrade so nothing silently falls back to chart defaults.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What does <code>helm template</code> do, and why is it useful?</summary>
+          <div class="answer">
+            <p>It renders the chart's templates with the given values and prints the resulting Kubernetes YAML, without needing a cluster or installing anything. It's how I see exactly what Helm would apply, so I use it to debug templates and in CI to validate the output, for example with a linter or a policy check. GitOps tools do something similar when they render a chart before applying it.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How does a Helm rollback work, and what doesn't it undo?</summary>
+          <div class="answer">
+            <p>Helm stores every revision of a release as a Secret in the namespace. <code>helm rollback RELEASE N</code> re-applies the manifests from revision N, recorded as a new revision. It rolls back Kubernetes objects only. A database migration that already ran, or data already written to a volume, isn't undone. So for stateful apps I treat an upgrade as potentially one-way, and take backups first.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Helm or Kustomize?</summary>
+          <div class="answer">
+            <p>They solve overlapping problems differently. Helm uses templates and values, gives me packaged, versioned releases with history, and is the normal way to install third-party software. Kustomize takes plain YAML and layers patches per environment, built into kubectl, and the result is always valid YAML. I'd use Helm for shared or third-party packages and Kustomize for my own manifests across environments, and they combine fine, for instance Argo CD rendering a chart and then patching it.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Remember</strong> that <code>repo update</code> is <code>apt update</code>, not <code>apt upgrade</code>. <strong>Pin</strong> chart versions. <strong>Keep</strong> one values file per environment in git and pass it every time. <strong>Run</strong> <code>helm template</code> and <code>lint</code> before you install. <strong>Never</strong> edit Helm-owned objects by hand. <strong>Use</strong> <code>upgrade --install</code> in pipelines. And treat rollback as YAML-only.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
