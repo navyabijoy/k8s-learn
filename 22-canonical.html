@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kubernetes at Canonical · Kubernetes Handbook</title>
+<meta name="description" content="You are preparing for a team at Canonical, so this is the chapter that is about them. Canonical ships Kubernetes in more than one form, and the names are easy to mix up. By the end you can say what ea">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="22">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Kubernetes at Canonical</h1>
+            <p class="sub">MicroK8s, Canonical Kubernetes, Charmed Kubernetes, Juju</p>
+          </div>
+          <span class="pill">Section 22</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">You are preparing for a team at Canonical, so this is the chapter that is about them. Canonical ships Kubernetes in more than one form, and the names are easy to mix up. By the end you can say what each one is, how they relate, what Juju has to do with it, and which questions to ask the interviewer.</p>
+
+      <div class="callout danger">
+        <span class="label">Check this before you rely on it</span>
+        <p>These products change names, versions and direction. Everything below was read from Canonical's own pages in <strong>October 2026</strong> (sources are listed at the end), and where a page did not say something, this chapter says so instead of guessing. Re-check the docs the week of your interview, especially version numbers and channels.</p>
+      </div>
+
+      <h2>The problem</h2>
+      <p>Upstream Kubernetes is a set of programs and a lot of choices. Which network plugin? Which DNS? How do you install it, upgrade it, patch it, and who do you call at 3 a.m.? Most companies do not want to make all of those choices themselves.</p>
+      <p>You already know this pattern from the Linux handbook. The Linux kernel is not something you install on its own. You install a <strong>distribution</strong> like Ubuntu: the kernel plus a chosen set of tools, defaults and a package manager. Kubernetes has distributions for the same reason.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p><strong>Upstream Kubernetes is to a Kubernetes distribution what the Linux kernel is to Ubuntu.</strong> A distribution adds the choices, the packaging, the upgrades and the support. Canonical, the company behind Ubuntu, sells three of them.</p>
+      </div>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th>Linux</th><th>Kubernetes</th></tr></thead>
+        <tbody>
+          <tr><td>kernel</td><td>upstream Kubernetes (the API server, kubelet and so on)</td></tr>
+          <tr><td>distribution (Ubuntu)</td><td>Kubernetes distribution (MicroK8s, Canonical Kubernetes, Charmed Kubernetes)</td></tr>
+          <tr><td><code>apt</code> and the package archive</td><td>snaps, or Juju charms</td></tr>
+          <tr><td>defaults and a support contract</td><td>bundled CNI, DNS, ingress, storage, and an LTS commitment</td></tr>
+        </tbody>
+      </table></div>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 760 400" role="img" aria-labelledby="k22-t k22-d">
+          <title id="k22-t">How Canonical's Kubernetes products fit together</title>
+          <desc id="k22-d">Ubuntu and upstream Kubernetes form the base. On top sit MicroK8s, Canonical Kubernetes and Charmed Kubernetes. Juju is shown over Canonical Kubernetes charm and Charmed Kubernetes as the tool that deploys and operates them.</desc>
+          <rect class="box-cp" x="20" y="332" width="720" height="50" rx="10"/>
+          <text class="t t-b" x="380" y="362" text-anchor="middle">Ubuntu / Linux: kernel, systemd, snapd</text>
+
+          <rect class="box-cp" x="20" y="268" width="720" height="50" rx="10"/>
+          <text class="t t-b" x="380" y="298" text-anchor="middle">Upstream Kubernetes (the same code everyone uses)</text>
+
+          <rect class="box-node" x="20" y="130" width="226" height="124" rx="12"/>
+          <text class="t t-b" x="133" y="160" text-anchor="middle">MicroK8s</text>
+          <text class="t-sm" x="133" y="184" text-anchor="middle">snap: microk8s</text>
+          <text class="t-sm" x="133" y="204" text-anchor="middle">"low-ops, minimal production"</text>
+          <text class="t-sm" x="133" y="224" text-anchor="middle">workstations, edge, small HA</text>
+
+          <rect class="box-svc" x="268" y="130" width="226" height="124" rx="12"/>
+          <text class="t t-b" x="381" y="160" text-anchor="middle">Canonical Kubernetes</text>
+          <text class="t-sm" x="381" y="184" text-anchor="middle">snap: k8s</text>
+          <text class="t-sm" x="381" y="204" text-anchor="middle">also a charm, and Cluster API</text>
+          <text class="t-sm" x="381" y="224" text-anchor="middle">opinionated, 12-year LTS</text>
+
+          <rect class="box-pod-solid" x="516" y="130" width="224" height="124" rx="12"/>
+          <text class="t t-b" x="628" y="160" text-anchor="middle">Charmed Kubernetes</text>
+          <text class="t-sm" x="628" y="184" text-anchor="middle">Juju charms and bundles</text>
+          <text class="t-sm" x="628" y="204" text-anchor="middle">"wraps upstream K8s with</text>
+          <text class="t-sm" x="628" y="224" text-anchor="middle">software operators"</text>
+
+          <rect class="box-ext" x="268" y="30" width="472" height="70" rx="12"/>
+          <text class="t t-b" x="504" y="60" text-anchor="middle">Juju</text>
+          <text class="t-sm" x="504" y="82" text-anchor="middle">deploys and operates charms (used by the k8s charm and Charmed Kubernetes)</text>
+          <line x1="381" y1="102" x2="381" y2="128" stroke="var(--muted)" stroke-width="2"/>
+          <line x1="628" y1="102" x2="628" y2="128" stroke="var(--muted)" stroke-width="2"/>
+        </svg>
+        <figcaption>Three distributions of the same upstream code. Two of them are deployed with Juju. MicroK8s is a snap you install directly.</figcaption>
+      </figure>
+
+      <h2>Snaps in two minutes</h2>
+      <p>Two of the three products are installed as <strong>snaps</strong>. In the Linux handbook you installed software with <code>apt</code>, which pulls many small packages and shares libraries. A <strong>snap</strong> is one self-contained package with its own dependencies, managed by a service called <code>snapd</code>. Installs go through a store, and by default snaps update themselves in the background.</p>
+      <div class="code" data-lang="bash"><pre><code>
+snap info k8s
+snap list
+snap services k8s
+sudo snap refresh k8s
+</code></pre></div>
+      <ul>
+        <li><code>snap info k8s</code> shows the available <strong>channels</strong>: which versions, and how stable. Canonical's channel names look like <code>&lt;version&gt;-classic/&lt;risk&gt;</code>, for example <code>1.36-classic/stable</code>. Read this output instead of trusting a blog post for what exists today.</li>
+        <li><code>snap list</code> shows what is installed and which channel you follow.</li>
+        <li><code>snap services k8s</code> lists the background services the snap runs. They are ordinary systemd services under the hood.</li>
+        <li><code>snap refresh</code> updates to the latest revision of the channel you follow.</li>
+      </ul>
+      <p>The <code>--classic</code> flag on the install commands means the snap is installed with <strong>classic confinement</strong>: it is not sandboxed. A Kubernetes node needs to touch the whole machine (networking, mounts, containers), so it cannot be fenced in.</p>
+
+      <h2>MicroK8s</h2>
+      <div class="cards">
+        <div class="card"><span class="tag">What Canonical says</span><p>"Low-ops, minimal production Kubernetes", for developer workstations up to high-availability production clusters. Built by the Kubernetes team at Canonical.</p></div>
+        <div class="card"><span class="tag">Shape</span><p>One snap. Upstream Kubernetes. Updates over the air. Optional add-ons switched on with one command.</p></div>
+        <div class="card"><span class="tag">Good for</span><p>Learning, local development, CI, small edge sites, and small clusters that need to stay up.</p></div>
+        <div class="card"><span class="tag">Status</span><p>Actively released: its release notes list 1.34, 1.35 and 1.36. Canonical has not announced it going away.</p></div>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+sudo snap install microk8s --classic
+microk8s status --wait-ready
+microk8s kubectl get nodes
+microk8s enable dns
+</code></pre></div>
+      <ul>
+        <li>The install is a normal snap install.</li>
+        <li><code>status --wait-ready</code> blocks until the cluster is up. It is the first command to run after installing.</li>
+        <li><code>microk8s kubectl</code> is the bundled <code>kubectl</code>. You can alias it to <code>kubectl</code>.</li>
+        <li><code>microk8s enable &lt;addon&gt;</code> turns on an add-on. The add-on list changes between releases, so use <code>microk8s status</code> to see what exists on yours. For example, with 1.36 Canonical removed its dashboard add-on, after upstream deprecated the Kubernetes Dashboard.</li>
+      </ul>
+      <p>On macOS, Canonical documents <code>brew install ubuntu/microk8s/microk8s</code> followed by <code>microk8s install</code>. That is Canonical's route for macOS.</p>
+
+      <h3>Clustering and high availability</h3>
+      <div class="code" data-lang="bash"><pre><code>
+# on the first node
+microk8s add-node
+
+# on the node that is joining (paste the command add-node printed)
+microk8s join 192.168.1.230:25000/&lt;token&gt;
+microk8s join 192.168.1.230:25000/&lt;token&gt; --worker
+
+# leaving
+microk8s leave
+microk8s remove-node 10.22.254.79
+</code></pre></div>
+      <ul>
+        <li><code>add-node</code> prints a one-time join command with a token. You run that on the new machine.</li>
+        <li><code>--worker</code> joins a node that only runs workloads, not control-plane components.</li>
+        <li><code>leave</code> is run on the node that is going away. <code>remove-node</code> is then run from a remaining node.</li>
+      </ul>
+      <p>Per Canonical's docs, high availability has been on by default since MicroK8s 1.19. With three or more nodes the datastore is replicated, so the cluster survives one node failing. Worker-only nodes do not count toward that. The datastore is <code>dqlite</code>, not etcd.</p>
+
+      <h2>Canonical Kubernetes</h2>
+      <p>This is Canonical's newer distribution. Canonical describes it as "a performant, lightweight, secure and opinionated distribution of Kubernetes". It builds on upstream and adds the extra services a cluster needs, so you do not have to choose them. The same distribution can be deployed three ways: as a <strong>snap</strong>, as a <strong>Juju charm</strong>, or through <strong>Cluster API</strong>.</p>
+
+      <h3>What is in the box</h3>
+      <p>Canonical's launch post listed what it bundles: networking, DNS, a metrics server, local storage, ingress, a gateway and a load balancer, "powered by Cilium, CoreDNS, OpenEBS, and Metrics Server". Network, DNS and the metrics server run straight after bootstrap, and the rest you switch on. Confirm the current list on your own cluster with <code>sudo k8s status</code>, because features are added over time.</p>
+      <p>You know these from earlier chapters: DNS (chapter 9), ingress (chapter 10), storage (chapter 12), the network plugin (chapter 17), metrics (chapter 21). Canonical Kubernetes is a cluster where those choices were made for you.</p>
+
+      <h3>Install on a Linux machine</h3>
+      <div class="code" data-lang="bash"><pre><code>
+snap info k8s
+sudo snap install k8s --classic --channel=1.36-classic/stable
+sudo k8s bootstrap
+sudo k8s status --wait-ready
+sudo k8s kubectl get nodes
+sudo k8s kubectl get pods -n kube-system
+</code></pre></div>
+      <ul>
+        <li><code>snap info k8s</code> first, to see which channels exist today. Canonical's own docs use <code>1.37-classic/stable</code> as an example while their release notes list up to 1.36 LTS. Pick a channel that <code>snap info</code> really shows.</li>
+        <li><code>sudo k8s bootstrap</code> creates a new cluster on this node. You run it once.</li>
+        <li><code>sudo k8s status --wait-ready</code> waits for the cluster, then shows which features are enabled.</li>
+        <li><code>sudo k8s kubectl ...</code> is the bundled <code>kubectl</code>. Running it with <code>sudo</code> is how Canonical's tutorial does it.</li>
+      </ul>
+
+      <h3>Turn features on and off</h3>
+      <div class="code" data-lang="bash"><pre><code>
+sudo k8s enable local-storage
+sudo k8s disable local-storage
+sudo k8s status
+</code></pre></div>
+      <p><code>enable</code> and <code>disable</code> switch core cluster features. <code>local-storage</code> is the one Canonical's tutorial uses as its example.</p>
+
+      <h3>Add a worker node</h3>
+      <div class="code" data-lang="bash"><pre><code>
+# on the existing control-plane node
+sudo k8s get-join-token --worker
+
+# on the new machine: install the same channel, then join
+sudo snap install k8s --classic --channel=1.36-classic/stable
+sudo k8s join-cluster &lt;JOIN-TOKEN&gt;
+</code></pre></div>
+      <ul>
+        <li><code>get-join-token --worker</code> makes a token for a worker-only node.</li>
+        <li>The new machine needs the snap, on the same channel as the cluster. Then <code>join-cluster</code> with that token.</li>
+        <li>For a control-plane node, Canonical's pages I read did not show the exact form. Run <code>sudo k8s get-join-token --help</code> and use what it prints.</li>
+      </ul>
+
+      <h3>The whole command set</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>bootstrap</code></td><td>create a new cluster on this node</td></tr>
+          <tr><td><code>status</code></td><td>show cluster and feature status</td></tr>
+          <tr><td><code>enable</code> / <code>disable</code></td><td>turn core features on or off</td></tr>
+          <tr><td><code>get-join-token</code> / <code>join-cluster</code></td><td>add a node</td></tr>
+          <tr><td><code>remove-node</code></td><td>take a node out</td></tr>
+          <tr><td><code>get</code> / <code>set</code></td><td>read and change cluster configuration</td></tr>
+          <tr><td><code>config</code></td><td>generate an admin kubeconfig</td></tr>
+          <tr><td><code>kubectl</code></td><td>run the bundled kubectl</td></tr>
+          <tr><td><code>certs-status</code> / <code>refresh-certs</code></td><td>look at, and renew, certificates</td></tr>
+          <tr><td><code>completion</code></td><td>shell autocompletion</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Requirements and a warning</h3>
+      <ul>
+        <li>Ubuntu 22.04 or later, or another OS that supports snaps. Root or sudo. Internet access.</li>
+        <li>Canonical recommends at least 20 GB of disk and 8 GB of memory for workloads.</li>
+        <li>Use a clean machine. The docs warn that the snap may conflict with Docker or containerd already on the host. If you use LXD, use virtual machines rather than containers.</li>
+      </ul>
+
+      <h3>Support and lifecycle</h3>
+      <p>In February 2025 Canonical announced a <strong>12-year security maintenance and support commitment starting with Kubernetes 1.32</strong>, delivered as Canonical Kubernetes 1.32 LTS. Its release notes label both 1.32 and 1.36 as LTS. Canonical's MicroK8s page ties paid enterprise support to Ubuntu Pro.</p>
+
+      <h2>Charmed Kubernetes and Juju</h2>
+      <p>To understand Charmed Kubernetes, you first need Juju, because Charmed Kubernetes is a Kubernetes you get <em>through</em> Juju.</p>
+
+      <h3>Juju in plain words</h3>
+      <p>Canonical describes Juju as "an open source orchestration engine for software operators". Chapter 19 explained operators: programs that hold the knowledge of how to run a piece of software. Juju is the same idea, applied to machines and clouds. A <strong>charm</strong> is that packaged knowledge for one application: how to install it, configure it, connect it to others, scale it and upgrade it.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Juju word</th><th>Plain meaning</th><th>Kubernetes cousin</th></tr></thead>
+        <tbody>
+          <tr><td>controller</td><td>the Juju server that manages deployments on one or more clouds</td><td>the control plane</td></tr>
+          <tr><td>model</td><td>a workspace holding a set of deployed applications</td><td>a namespace</td></tr>
+          <tr><td>charm</td><td>packaged code and metadata that knows how to run an application</td><td>an operator, or a Helm chart with brains</td></tr>
+          <tr><td>application</td><td>a deployed charm, with a name</td><td>a Deployment</td></tr>
+          <tr><td>unit</td><td>one running instance of an application, on one machine</td><td>a Pod</td></tr>
+          <tr><td>integration</td><td>a link between two applications that exchange data</td><td>a Service plus config wiring</td></tr>
+          <tr><td>bundle</td><td>a set of charms and integrations deployed together</td><td>a Helm release of many things</td></tr>
+        </tbody>
+      </table></div>
+      <p>The table is my plain-words summary. Juju's own docs have the precise definitions. Canonical's CLI reference lists the commands that matter, and the names below are all taken from it:</p>
+      <div class="code" data-lang="bash"><pre><code>
+juju bootstrap
+juju add-model dev
+juju deploy &lt;charm-or-bundle&gt;
+juju integrate &lt;app-a&gt; &lt;app-b&gt;
+juju status
+juju config &lt;app&gt;
+juju add-unit &lt;app&gt;
+juju scale-application &lt;app&gt; &lt;n&gt;
+</code></pre></div>
+      <ul>
+        <li><code>bootstrap</code> creates a controller on a cloud.</li>
+        <li><code>add-model</code> makes a workspace.</li>
+        <li><code>deploy</code> puts a charm or bundle in it.</li>
+        <li><code>integrate</code> connects two applications. Older guides call this <code>relate</code>. Today's command list has <code>integrate</code>, not <code>relate</code>.</li>
+        <li><code>status</code> is the one you will run most.</li>
+        <li><code>config</code> reads and sets application settings. <code>add-unit</code> and <code>scale-application</code> change how many units run.</li>
+      </ul>
+
+      <h3>Charmed Kubernetes</h3>
+      <p>Canonical describes it as wrapping "upstream K8s with software operators". It is Kubernetes deployed and run by charms: a control-plane charm, a worker charm, etcd and a certificate authority charm (<code>easyrsa</code>), all connected with Juju integrations. Because Juju can drive many clouds and bare metal, it is aimed at multi-cloud and larger deployments.</p>
+      <div class="code" data-lang="bash"><pre><code>
+juju add-model k8s
+juju deploy charmed-kubernetes
+juju status
+</code></pre></div>
+      <ul>
+        <li>The bundle is called <code>charmed-kubernetes</code>. Canonical's install guide says it has "significantly higher resource requirements (10+ machines)".</li>
+        <li>A smaller bundle called <code>kubernetes-core</code> puts one control-plane unit with etcd and a certificate authority on one machine and one worker on another. Canonical's install guide for existing machines uses it and needs Juju 3.1 or later and Ubuntu 22.04 or equivalent.</li>
+        <li>You scale the parts separately with Juju, for instance <code>juju add-unit kubernetes-worker</code>.</li>
+        <li>The control-plane application was called <code>kubernetes-master</code> in old guides. Today it is <code>kubernetes-control-plane</code>.</li>
+      </ul>
+
+      <h3>The Canonical Kubernetes charm</h3>
+      <p>Canonical Kubernetes can also be deployed with Juju. Its docs describe a charm named <code>k8s</code> that installs and configures the <code>k8s</code> snap on machines Juju manages, on any cloud Juju supports. So the same distribution has two doors: install the snap by hand on a machine, or let Juju do it across many. For the exact charm commands and channels, use the "k8s charm" install guide in Canonical's docs. I did not copy them here because I could not verify them.</p>
+
+      <h2>How they relate</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th></th><th>MicroK8s</th><th>Canonical Kubernetes</th><th>Charmed Kubernetes</th></tr></thead>
+        <tbody>
+          <tr><td>Installed as</td><td>snap <code>microk8s</code></td><td>snap <code>k8s</code>, Juju charm <code>k8s</code>, or Cluster API</td><td>Juju bundle <code>charmed-kubernetes</code></td></tr>
+          <tr><td>Canonical's pitch</td><td>low-ops, minimal production</td><td>opinionated, lightweight, secure</td><td>software operators wrapping upstream</td></tr>
+          <tr><td>Defaults</td><td>add-ons you enable</td><td>Cilium, CoreDNS, OpenEBS, metrics server, plus ingress, gateway, load balancer</td><td>many charms you choose and configure</td></tr>
+          <tr><td>Operated with</td><td><code>microk8s</code> CLI</td><td><code>k8s</code> CLI (or Juju)</td><td><code>juju</code></td></tr>
+          <tr><td>Typical use</td><td>laptop, edge, small HA</td><td>workstation to data centre, with LTS</td><td>multi-cloud, large, bare metal</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="callout key">
+        <span class="label">The relationship, carefully</span>
+        <p>In Feb 2025 Canonical wrote that "future releases of MicroK8s and Charmed Kubernetes will build on Canonical Kubernetes and also gain the 12 year LTS", and at the beta launch called Canonical Kubernetes "an excellent foundation" for them. That is a statement about direction, in 2024 and 2025 posts. MicroK8s and Charmed Kubernetes are still shipping and documented in 2026. Say it that way: <strong>three distributions, with Canonical Kubernetes as the foundation Canonical is building the others on</strong>. And ask the interviewer where each stands today. That is a good question to ask.</p>
+      </div>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li><strong>Distribution versus kernel</strong> is the very first table of the Linux handbook, reused. Say "Kubernetes is the kernel, Canonical Kubernetes is the distribution" and you have explained it.</li>
+        <li><strong><code>snap</code> versus <code>apt</code></strong> is a packaging choice. <code>apt</code> pulls shared libraries from an archive. A snap carries what it needs and updates itself. <code>snap info</code>, <code>snap list</code> and <code>snap refresh</code> are the counterparts of <code>apt show</code>, <code>apt list --installed</code> and <code>apt upgrade</code>.</li>
+        <li><strong>LTS</strong> is the same word as in "Ubuntu LTS". It means "supported for a long time, with security fixes", and the handbook told you to prefer it.</li>
+        <li><strong>The services</strong> the snap runs are systemd services. <code>snap services k8s</code>, <code>systemctl</code> and <code>journalctl</code> are how you see them, exactly as for nginx.</li>
+        <li><strong>A node is a Linux machine.</strong> <code>k8s get-join-token</code> and <code>microk8s add-node</code> are ways to say "this machine is now part of the cluster".</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"Canonical Kubernetes, MicroK8s and Charmed Kubernetes are the same thing."</strong> They are three distributions with different packaging and audiences. Name the install method for each: snap, snap and charm, Juju bundle.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"Canonical Kubernetes replaces MicroK8s."</strong> Not as far as Canonical has said. It is described as a foundation for future MicroK8s and Charmed Kubernetes releases, and MicroK8s still ships. Do not claim a deprecation that nobody announced.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"A charm is a Helm chart."</strong> A Helm chart templates YAML and stops. A charm contains code that keeps running: it reacts when units join, configuration changes or an integration is made. That is closer to an operator.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Installing on a machine that already runs Docker or containerd.</strong> The docs warn of conflicts. Use a clean VM.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Using a channel from a blog post.</strong> Channels and versions move. <code>snap info k8s</code> shows what exists now.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Older Juju commands.</strong> <code>juju relate</code> became <code>juju integrate</code>, and <code>kubernetes-master</code> became <code>kubernetes-control-plane</code>. Old guides use the old names.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>You need a clean <strong>Ubuntu 22.04 or later</strong> machine with root access: a cloud VPS (chapter 4 of the Linux handbook), a VirtualBox VM, or WSL on Windows with snap support. Give it 8 GB of memory and 20 GB of disk if you can. <strong>Do not run this on a machine that has Docker installed.</strong> This is a different cluster from your kind cluster, so skip it if you only have a Mac and no VM.</p>
+      </div>
+
+      <div class="code" data-lang="bash"><pre><code>
+# 1. what does the store offer today?
+snap info k8s
+
+# 2. install and bootstrap (use a channel from step 1)
+sudo snap install k8s --classic --channel=1.36-classic/stable
+sudo k8s bootstrap
+sudo k8s status --wait-ready
+
+# 3. it is just Kubernetes
+sudo k8s kubectl get nodes -o wide
+sudo k8s kubectl get pods -n kube-system
+sudo k8s kubectl create deployment hello --image=nginx:1.27 --replicas=2
+sudo k8s kubectl get pods
+
+# 4. the Linux side
+snap services k8s
+snap list
+sudo k8s get --help
+
+# 5. features
+sudo k8s enable local-storage
+sudo k8s status
+
+# 6. clean up
+sudo snap remove k8s --purge
+</code></pre></div>
+
+      <p>Then, on a separate clean machine, compare with MicroK8s:</p>
+      <div class="code" data-lang="bash"><pre><code>
+sudo snap install microk8s --classic
+microk8s status --wait-ready
+microk8s kubectl get nodes
+microk8s kubectl get pods -A
+sudo snap remove microk8s --purge
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>Step 3: the same <code>kube-system</code> Pods you saw in chapter 3, plus what Canonical bundled (a network plugin and DNS). Compare with a kind cluster and with MicroK8s.</li>
+        <li>Step 4: the snap runs services you can list. Same operating system, same <code>systemd</code>.</li>
+        <li>Step 5: <code>k8s status</code> changes. Features are switches, not separate installs.</li>
+        <li>Write down three differences you noticed between the two. That list is your interview answer to "how do they differ in practice?"</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>What's the difference between MicroK8s, Canonical Kubernetes and Charmed Kubernetes?</summary>
+          <div class="answer">
+            <p>All three are Canonical distributions of upstream Kubernetes. MicroK8s is a single snap, described as low-ops and minimal production, good for workstations, edge and small HA clusters. Canonical Kubernetes is the newer, opinionated distribution. It's a snap called <code>k8s</code>, also a Juju charm, also usable through Cluster API, with Cilium, CoreDNS and other defaults bundled, and a 12-year LTS from 1.32. Charmed Kubernetes is deployed with Juju charms and bundles, aimed at multi-cloud and larger setups. Canonical has said it's building the other two on top of Canonical Kubernetes over time.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Why would a company use a distribution instead of plain upstream Kubernetes?</summary>
+          <div class="answer">
+            <p>Upstream is components and decisions. A distribution makes the decisions: which network plugin, DNS, storage and ingress, how to install, how to upgrade and patch, and who supports it. It's the same reason people run Ubuntu and not a bare kernel. For Canonical specifically, you also get a long support commitment, a 12-year security maintenance commitment starting with 1.32, and enterprise support through Ubuntu Pro.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What is Juju, and what is a charm?</summary>
+          <div class="answer">
+            <p>Juju is an orchestration engine for software operators. A charm is one of those operators: packaged code that knows how to install, configure, connect, scale and upgrade one application. A controller manages deployments, a model is a workspace, an application is a deployed charm, and units are the running instances. You connect applications with integrations. A charm is closer to a Kubernetes operator than to a Helm chart, because it keeps reacting to events rather than just templating files.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How would you add a worker node to a Canonical Kubernetes cluster? And to MicroK8s?</summary>
+          <div class="answer">
+            <p>For Canonical Kubernetes I'd run <code>sudo k8s get-join-token --worker</code> on a control-plane node, install the same snap channel on the new machine, and run <code>sudo k8s join-cluster</code> with the token. For MicroK8s I'd run <code>microk8s add-node</code> on an existing node, which prints a join command, and run that on the new machine, with <code>--worker</code> if it should only run workloads. In both cases the shape is the same: a one-time token from the cluster, used by the new node.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Why does it matter that these are delivered as snaps?</summary>
+          <div class="answer">
+            <p>A snap is a self-contained package with its own dependencies, installed from a store and tied to a channel, which combines a Kubernetes version and a stability level. That gives you one installable unit with a clear version, and it can refresh itself, which Canonical uses for automatic patch updates. The trade-off is that Kubernetes snaps use classic confinement, so they aren't sandboxed, and they can conflict with a container runtime already on the machine.</p>
+          </div>
+        </details>
+      </div>
+
+      <h3>Questions to ask them</h3>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Good questions show you did the reading. Pick two.</p>
+        <ul>
+          <li>"Canonical said MicroK8s and Charmed Kubernetes will build on Canonical Kubernetes. How far along is that for this team's product?"</li>
+          <li>"When customers choose between the snap, the Juju charm and Cluster API for Canonical Kubernetes, what usually decides it?"</li>
+          <li>"What is hardest about upgrading a cluster across many clouds with charms?"</li>
+          <li>"How does the 12-year LTS change how this team handles upstream version bumps?"</li>
+        </ul>
+      </div>
+
+      <h2>Sources checked</h2>
+      <p>Read in October 2026. Where these pages were silent, this chapter says so.</p>
+      <ul>
+        <li><a href="https://documentation.ubuntu.com/canonical-kubernetes/latest/">Canonical Kubernetes documentation</a>, including the getting-started tutorial, the commands reference, the install guide and the custom-worker how-to.</li>
+        <li><a href="https://canonical.com/microk8s">MicroK8s</a>, its <a href="https://canonical.com/microk8s/docs">docs</a>, the <a href="https://canonical.com/microk8s/docs/clustering">clustering guide</a> and <a href="https://canonical.com/microk8s/docs/release-notes">release notes</a>.</li>
+        <li><a href="https://canonical.com/blog/12-year-lts-for-kubernetes">Canonical announces 12 year Kubernetes LTS</a>.</li>
+        <li><a href="https://ubuntu.com/blog/try-canonical-kubernetes-beta">Try the new Canonical Kubernetes, now in beta</a>.</li>
+        <li><a href="https://ubuntu.com/kubernetes/docs/install-existing">Charmed Kubernetes: install on existing machines</a>.</li>
+        <li><a href="https://canonical.com/juju/docs/juju-cli/latest/">Juju CLI documentation</a>.</li>
+      </ul>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Say</strong> "distribution" and compare it to Ubuntu and the kernel. <strong>Name</strong> the install method for each product: snap, snap plus charm, Juju bundle. <strong>Run</strong> <code>snap info</code> before you quote a channel. <strong>Be careful</strong> with claims about what replaces what. <strong>Know</strong> Juju's words: controller, model, charm, application, unit, integration. And <strong>ask</strong> a good question at the end.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
