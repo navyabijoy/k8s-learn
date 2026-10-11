@@ -22,7 +22,7 @@
     { n: 14, file: "14-workloads.html",        title: "StatefulSets, DaemonSets, Jobs, CronJobs", ready: true },
     { n: 15, file: "15-scheduling.html",       title: "Scheduling: taints, tolerations, affinity", ready: true },
     { n: 16, file: "16-rbac.html",             title: "RBAC and ServiceAccounts", ready: true },
-    { n: 17, file: "17-networking.html",       title: "Networking: Pod network, CNI, NetworkPolicy" },
+    { n: 17, file: "17-networking.html",       title: "Networking: Pod network, CNI, NetworkPolicy", ready: true },
     { n: 18, file: "18-helm.html",             title: "Helm" },
     { n: 19, file: "19-operators.html",        title: "Operators, CRDs, the reconcile loop" },
     { n: 20, file: "20-troubleshooting.html",  title: "When it's broken", ready: true },

@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Networking: the Pod network, CNI, NetworkPolicy · Kubernetes Handbook</title>
+<meta name="description" content="Services (chapter 9) sit on top of something: a network where every Pod has its own address and can reach every other Pod. This chapter looks at that layer, who builds it (a CNI plugin), and the one t">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-chapter="17">
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Chapter list"></aside>
+  <main>
+    <article class="page">
+
+      <header class="chapter-head">
+        <div class="head-row">
+          <div>
+            <h1>Networking: the Pod network, CNI, NetworkPolicy</h1>
+            <p class="sub">How every Pod can reach every Pod, and how to stop that</p>
+          </div>
+          <span class="pill">Section 17</span>
+        </div>
+        <div class="rule"></div>
+      </header>
+
+      <p class="lede">Services (chapter 9) sit on top of something: a network where every Pod has its own address and can reach every other Pod. This chapter looks at that layer, who builds it (a CNI plugin), and the one tool Kubernetes gives you to stop everything talking to everything: NetworkPolicy. It also covers the trap that catches almost everyone: a policy that is accepted and does nothing.</p>
+
+      <h2>The problem</h2>
+      <p>Pods run on different machines. A Pod on node A at <code>10.244.1.5</code> wants to call a Pod on node B at <code>10.244.2.9</code>. Those are not real addresses on your office network. Who makes the call arrive?</p>
+      <p>And once that works, you meet the opposite worry. If <em>every</em> Pod can reach <em>every</em> other Pod, then a compromised front-end can talk straight to your database. On a plain Linux network you would use a firewall. In a cluster, the Pods keep moving, so IP-based rules cannot keep up. You need rules written in terms of <strong>labels</strong>.</p>
+
+      <div class="callout key">
+        <span class="label">Key idea</span>
+        <p>Kubernetes defines <strong>what the network must do</strong> and leaves <strong>how</strong> to a plugin. Every Pod gets its own IP. Any Pod can reach any Pod without address translation. A <strong>NetworkPolicy</strong> then narrows that, if the plugin enforces it.</p>
+      </div>
+
+      <h2>The network model</h2>
+      <p>Kubernetes sets down three rules, and every network plugin has to satisfy them:</p>
+      <ol>
+        <li><strong>Every Pod gets its own IP address.</strong> Not shared with the node, not shared with other Pods.</li>
+        <li><strong>Pods can talk to all other Pods, on any node, without NAT.</strong> Pod B sees the real source IP of Pod A.</li>
+        <li><strong>Agents on a node (the kubelet, for health checks) can reach all Pods on that node.</strong></li>
+      </ol>
+      <p>This is a deliberately simple promise. It means your app can use plain IPs and ports, with no port mapping, as on a flat network.</p>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th>Traffic</th><th>Solved by</th><th>Chapter</th></tr></thead>
+        <tbody>
+          <tr><td>container to container, in one Pod</td><td><code>localhost</code> (shared network namespace)</td><td>6</td></tr>
+          <tr><td>Pod to Pod</td><td>the Pod network, built by a CNI plugin</td><td>this one</td></tr>
+          <tr><td>Pod to Service</td><td>kube-proxy rules, or the plugin (eBPF)</td><td>9</td></tr>
+          <tr><td>outside to Service</td><td>LoadBalancer, Ingress, Gateway</td><td>9, 10</td></tr>
+        </tbody>
+      </table></div>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 760 330" role="img" aria-labelledby="n17-t n17-d">
+          <title id="n17-t">The Pod network across two nodes</title>
+          <desc id="n17-d">Two nodes each have their own Pod address range. Pods connect to the node network through virtual cables. The CNI plugin carries traffic between nodes with a tunnel or with routes.</desc>
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/>
+            </marker>
+          </defs>
+          <rect class="box-node" x="10" y="14" width="300" height="270" rx="14"/>
+          <text class="t t-b" x="28" y="42">Node A</text>
+          <text class="t-mono" x="28" y="62">192.168.1.10</text>
+          <text class="t-sm" x="190" y="42">Pod range 10.244.1.0/24</text>
+          <rect class="box-pod-solid" x="30" y="84" width="118" height="70" rx="10"/>
+          <text class="t t-b" x="89" y="112" text-anchor="middle">Pod</text>
+          <text class="t-mono" x="89" y="134" text-anchor="middle">10.244.1.5</text>
+          <rect class="box-pod-solid" x="170" y="84" width="118" height="70" rx="10"/>
+          <text class="t t-b" x="229" y="112" text-anchor="middle">Pod</text>
+          <text class="t-mono" x="229" y="134" text-anchor="middle">10.244.1.6</text>
+          <rect class="box-in-node" x="30" y="206" width="258" height="56" rx="8"/>
+          <text class="t t-b" x="159" y="230" text-anchor="middle">node networking</text>
+          <text class="t-sm" x="159" y="248" text-anchor="middle">bridge or routes, set up by the CNI plugin</text>
+          <line x1="89" y1="156" x2="89" y2="204" stroke="var(--muted)" stroke-width="2"/>
+          <line x1="229" y1="156" x2="229" y2="204" stroke="var(--muted)" stroke-width="2"/>
+
+          <rect class="box-node" x="450" y="14" width="300" height="270" rx="14"/>
+          <text class="t t-b" x="468" y="42">Node B</text>
+          <text class="t-mono" x="468" y="62">192.168.1.11</text>
+          <text class="t-sm" x="630" y="42">Pod range 10.244.2.0/24</text>
+          <rect class="box-pod-solid" x="470" y="84" width="118" height="70" rx="10"/>
+          <text class="t t-b" x="529" y="112" text-anchor="middle">Pod</text>
+          <text class="t-mono" x="529" y="134" text-anchor="middle">10.244.2.9</text>
+          <rect class="box-pod-solid" x="610" y="84" width="118" height="70" rx="10"/>
+          <text class="t t-b" x="669" y="112" text-anchor="middle">Pod</text>
+          <text class="t-mono" x="669" y="134" text-anchor="middle">10.244.2.4</text>
+          <rect class="box-in-node" x="470" y="206" width="258" height="56" rx="8"/>
+          <text class="t t-b" x="599" y="230" text-anchor="middle">node networking</text>
+          <text class="t-sm" x="599" y="248" text-anchor="middle">bridge or routes, set up by the CNI plugin</text>
+          <line x1="529" y1="156" x2="529" y2="204" stroke="var(--muted)" stroke-width="2"/>
+          <line x1="669" y1="156" x2="669" y2="204" stroke="var(--muted)" stroke-width="2"/>
+
+          <line class="arrow" x1="290" y1="234" x2="468" y2="234" style="marker-start:url(#ah)"/>
+          <text class="t-sm" x="380" y="222" text-anchor="middle">tunnel (overlay)</text>
+          <text class="t-sm" x="380" y="256" text-anchor="middle">or plain routes</text>
+          <text class="t t-b" x="380" y="312" text-anchor="middle">Pod 10.244.1.5 to Pod 10.244.2.9: no NAT, real source IP</text>
+        </svg>
+        <figcaption>Each node owns a slice of Pod addresses. The CNI plugin makes a packet for another node's slice arrive, by tunnelling or by routing.</figcaption>
+      </figure>
+
+      <h2>Who builds it: the CNI plugin</h2>
+      <p>The <strong>Container Network Interface</strong> (CNI) is a small standard. When a Pod starts, the container runtime calls the CNI plugin installed on that node and says "wire up this Pod". The plugin does the work.</p>
+      <ol>
+        <li>The runtime creates the Pod's <strong>network namespace</strong> (the one from chapter 2), held open by a tiny "sandbox" container.</li>
+        <li>The plugin gives the Pod an IP from that node's Pod range.</li>
+        <li>It creates a virtual cable (a <strong>veth pair</strong>) from the Pod's namespace to the node, and sets up routes.</li>
+        <li>For traffic to other nodes, it uses an <strong>overlay</strong> (packets wrapped inside packets, for example VXLAN), or <strong>routing</strong> (such as BGP), or <strong>eBPF</strong> programs in the kernel.</li>
+      </ol>
+      <p>When a Pod is deleted, the runtime calls the plugin again to clean up. If the plugin is broken, new Pods hang in <code>ContainerCreating</code> with a message about a failed sandbox (chapter 20).</p>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th>Plugin</th><th>Known for</th></tr></thead>
+        <tbody>
+          <tr><td>Cilium</td><td>eBPF networking and policy, can replace kube-proxy, deep observability. Bundled by Canonical Kubernetes (chapter 22).</td></tr>
+          <tr><td>Calico</td><td>routing and strong NetworkPolicy support, popular on bare metal</td></tr>
+          <tr><td>Flannel</td><td>simple overlay networking. On its own it does <strong>not</strong> enforce NetworkPolicy.</td></tr>
+          <tr><td>kindnet</td><td>the small plugin kind uses by default. Check whether your version enforces NetworkPolicy before you rely on it (the lab below tests it).</td></tr>
+          <tr><td>cloud plugins</td><td>native networking on a cloud (the VPC plugins), giving Pods real cloud IPs</td></tr>
+        </tbody>
+      </table></div>
+      <p>You choose a CNI when you build the cluster, and changing it later is painful. It decides which features you get: NetworkPolicy, encryption between nodes, observability, how Services are implemented.</p>
+
+      <h2>Look at it</h2>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl get pods -A -o wide
+kubectl get nodes -o wide
+kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"  "}{.spec.podCIDR}{"\n"}{end}'
+kubectl exec web -- ip addr
+kubectl exec web -- ip route
+</code></pre></div>
+      <ul>
+        <li>The <code>IP</code> column of Pods and the <code>INTERNAL-IP</code> of nodes are different ranges. That is the overlay at work.</li>
+        <li>The <code>jsonpath</code> line prints each node's <code>podCIDR</code>: the slice of Pod addresses it hands out. (Some plugins manage their own ranges and leave this empty.)</li>
+        <li><code>ip addr</code> inside a Pod shows a network interface with the Pod's IP, usually named <code>eth0</code>. <code>ip route</code> shows its default route, out through that virtual cable.</li>
+      </ul>
+      <p>Unlike a Service address, a Pod IP answers <code>ping</code>. You can <code>kubectl exec</code> into one Pod and <code>ping</code> another's IP. That is a simple test that the Pod network works.</p>
+
+      <h2>NetworkPolicy</h2>
+      <p>By default, <strong>every Pod can talk to every other Pod</strong>, in every namespace. A <strong>NetworkPolicy</strong> is a firewall rule written in terms of labels.</p>
+
+      <div class="callout danger">
+        <span class="label">Read this twice</span>
+        <p>Kubernetes <strong>accepts and stores</strong> a NetworkPolicy no matter what. It is only <strong>enforced</strong> if your CNI plugin supports it. On a cluster whose plugin does not, the policy sits in the API, <code>kubectl get networkpolicy</code> shows it, and <strong>nothing is blocked</strong>. The Kubernetes docs say so directly: creating a NetworkPolicy without a controller that implements it has no effect. Always <em>test</em> that a deny actually denies.</p>
+      </div>
+
+      <h3>The rules of the game</h3>
+      <ul>
+        <li><strong>No policy means open.</strong> A Pod that no policy selects accepts and sends anything.</li>
+        <li><strong>A Pod is isolated once a policy selects it</strong>, for the direction (ingress, egress) that policy lists. After that, only what some policy explicitly allows gets through.</li>
+        <li><strong>Policies add up.</strong> There is no "deny" rule and no order. Allowed traffic is the union of everything every policy allows.</li>
+        <li><strong>Both ends must agree.</strong> For A to reach B, A's egress rules and B's ingress rules must both allow it (if both are restricted).</li>
+        <li>Traffic from a Pod's own node is allowed, so kubelet probes still work.</li>
+      </ul>
+
+      <h3>Step 1: deny everything coming in</h3>
+      <div class="code" data-lang="yaml" data-file="default-deny.yaml"><pre><code>
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: dev
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+podSelector: {}          an empty selector selects EVERY Pod in this namespace
+policyTypes: [Ingress]   this policy is about incoming traffic
+(no ingress: rules)      ...and it allows nothing, so all incoming traffic to these Pods is denied
+</code></pre></div>
+
+      <h3>Step 2: allow exactly what you mean</h3>
+      <div class="code" data-lang="yaml" data-file="allow-client-to-web.yaml"><pre><code>
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-client-to-web
+  namespace: dev
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              role: client
+      ports:
+        - protocol: TCP
+          port: 80
+</code></pre></div>
+      <div class="code" data-lang="tree"><pre><code>
+podSelector: app=web         the Pods being protected
+ingress:
+  - from:
+      - podSelector: role=client   who may connect: Pods labelled role=client (same namespace)
+    ports: TCP 80                  and only to this port
+</code></pre></div>
+      <p>Together, the two policies say: <strong>nothing may reach any Pod, except <code>role=client</code> Pods may reach <code>app=web</code> on port 80</strong>. This "deny all, then allow what is needed" is the shape of every sound policy set.</p>
+
+      <h3>Who can be in a <code>from</code>?</h3>
+      <div class="code" data-lang="yaml"><pre><code>
+from:
+  - podSelector:                  # Pods in the same namespace with this label
+      matchLabels: {role: client}
+  - namespaceSelector:            # all Pods in namespaces with this label
+      matchLabels: {kubernetes.io/metadata.name: monitoring}
+  - ipBlock:                      # an address range (for things outside the cluster)
+      cidr: 203.0.113.0/24
+</code></pre></div>
+      <p>Namespaces automatically carry the label <code>kubernetes.io/metadata.name</code> with their own name, so <code>namespaceSelector</code> can pick one by name with no extra labelling.</p>
+
+      <div class="callout key">
+        <span class="label">The AND / OR trap</span>
+        <p>Items in the <code>from</code> list are <strong>OR</strong>: any match allows the traffic. But selectors <strong>inside the same item</strong> are <strong>AND</strong>.</p>
+      </div>
+      <div class="code" data-lang="yaml"><pre><code>
+# OR: Pods labelled role=client in this namespace, OR any Pod in monitoring
+from:
+  - podSelector: {matchLabels: {role: client}}
+  - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+
+# AND: only Pods labelled role=client that are in the monitoring namespace
+from:
+  - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+    podSelector: {matchLabels: {role: client}}
+</code></pre></div>
+      <p>The difference is one dash. It is the most common NetworkPolicy bug, and a very common interview question.</p>
+
+      <h3>Egress, and the DNS trap</h3>
+      <div class="code" data-lang="yaml"><pre><code>
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+</code></pre></div>
+      <p>If you deny egress, you also deny <strong>DNS</strong>, because looking up <code>web</code> means calling the cluster DNS server on port 53. Everything then fails with "could not resolve host", which looks nothing like a firewall problem. Any egress-restricting policy needs an explicit DNS allowance like the one above.</p>
+
+      <h2>Linux you already know</h2>
+      <ul>
+        <li><strong>Everything here is ordinary Linux networking.</strong> <code>ip addr</code>, <code>ip route</code>, <code>ss -tlnp</code> and <code>ping</code> work inside a Pod. <code>ip link</code> on a node shows the veth ends of each Pod. The kernel's <strong>network namespace</strong> from chapter 2 is the Pod's own network stack.</li>
+        <li><strong>A veth pair is a virtual network cable</strong> with one end in the Pod and one on the node, plugged into a bridge or routing table, like a patch cable into a switch.</li>
+        <li><strong>An overlay is a tunnel</strong>, like a VPN between nodes: packets for another node's range are wrapped and sent across the real network.</li>
+        <li><strong>NetworkPolicy is <code>ufw</code> and iptables, written in labels.</strong> In the Linux handbook you opened port 80 with <code>sudo ufw allow 80/tcp</code>. A policy is the same idea, except the source is "Pods labelled <code>role=client</code>", which survives Pods being replaced. The plugin turns your policy into kernel rules (iptables, nftables or eBPF).</li>
+        <li><strong>"Test it from outside"</strong> is the lesson from the Nginx chapter: <code>curl</code> on the server worked, the browser did not. A deny policy needs the same check from the Pod that should be blocked.</li>
+        <li><strong>Default-deny is the same advice as least privilege</strong> (chapter 16) and as <code>chmod 700</code>: start closed, open what you need.</li>
+      </ul>
+
+      <h2>Common mistakes</h2>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"I applied a policy, so I am protected."</strong> Only if the CNI enforces it. On some setups, such as a bare Flannel cluster and possibly kind's default plugin, nothing is blocked. Prove it with a test.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Default-deny egress and then "nothing resolves".</strong> DNS is blocked. Allow UDP and TCP 53 to the cluster DNS.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Mixing up AND and OR.</strong> A separate dash makes an alternative. Two selectors under one dash must both match.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"A second policy will deny what the first allowed."</strong> Policies only add. To remove access, remove or edit the policy that grants it.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Forgetting the other namespaces.</strong> A <code>podSelector</code> in <code>from</code> matches Pods in the <em>policy's own</em> namespace. To allow another namespace, you need a <code>namespaceSelector</code>.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Using Pod IPs in <code>ipBlock</code>.</strong> Pod IPs change. <code>ipBlock</code> is for addresses outside the cluster. Inside, use labels.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>"Namespaces already isolate the network."</strong> They do not (chapter 8). Only a NetworkPolicy does, and only on a plugin that enforces it.</p>
+      </div>
+      <div class="callout mistake">
+        <span class="label">Common mistake</span>
+        <p><strong>Assuming Pod traffic is encrypted.</strong> It is plain by default. Encryption comes from the CNI (for example WireGuard options) or from a service mesh with mutual TLS.</p>
+      </div>
+      <div class="callout danger">
+        <span class="label">This can break things</span>
+        <p>Applying a default-deny policy to a live namespace with no allow rules <strong>cuts off every Pod at once</strong>, including the Ingress controller's traffic and the metrics scraper. Write the allow policies first, try the whole set in a test namespace, and roll out namespace by namespace.</p>
+      </div>
+
+      <h2>Try it</h2>
+      <div class="callout try">
+        <span class="label">Try it</span>
+        <p>Part A explores the Pod network on any cluster. Part B tests NetworkPolicy. The result of Part B tells you something about <em>your</em> cluster: whether its plugin enforces policies. On kind's default plugin you may find that it does not (I could not confirm this for current kind releases, so the lab tests it). That is a real and useful discovery, not a mistake.</p>
+      </div>
+
+      <h3>Part A: the Pod network (three-node kind cluster)</h3>
+      <div class="code" data-lang="bash"><pre><code>
+kubectl create namespace dev
+kubectl create deployment web -n dev --image=nginx:1.27 --replicas=3
+kubectl rollout status deployment/web -n dev
+kubectl get pods -n dev -o wide                       # Pod IPs and the nodes they are on
+kubectl get nodes -o wide                             # node IPs: a different range
+kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"  "}{.spec.podCIDR}{"\n"}{end}'
+
+# ping between Pods on different nodes (use real IPs from the first command)
+kubectl run pinger -n dev --image=busybox:1.37 --restart=Never -- sleep 3600
+kubectl wait -n dev --for=condition=Ready pod/pinger --timeout=60s
+kubectl exec -n dev pinger -- ip addr
+kubectl exec -n dev pinger -- ip route
+kubectl exec -n dev pinger -- ping -c 2 &lt;a-web-pod-ip&gt;
+</code></pre></div>
+
+      <h3>Part B: does NetworkPolicy actually block?</h3>
+      <div class="code" data-lang="bash"><pre><code>
+# a Service for web, and two clients: one labelled, one not
+kubectl expose deployment web -n dev --port=80
+kubectl run client -n dev --image=curlimages/curl --labels=role=client -- sleep 3600
+kubectl run stranger -n dev --image=curlimages/curl -- sleep 3600
+kubectl wait -n dev --for=condition=Ready pod/client pod/stranger --timeout=60s
+
+# 1. before any policy: both can reach web
+kubectl exec -n dev client   -- curl -s -m 3 -o /dev/null -w "%{http_code}\n" http://web
+kubectl exec -n dev stranger -- curl -s -m 3 -o /dev/null -w "%{http_code}\n" http://web
+
+# 2. deny all ingress (save the policy from this chapter as default-deny.yaml)
+kubectl apply -f default-deny.yaml
+kubectl exec -n dev client -- curl -s -m 3 -o /dev/null -w "%{http_code}\n" http://web
+#    200 again?  Then your CNI does NOT enforce NetworkPolicy.
+#    000 (timeout)? It does. Carry on.
+
+# 3. allow only role=client (save the second policy as allow-client-to-web.yaml)
+kubectl apply -f allow-client-to-web.yaml
+kubectl exec -n dev client   -- curl -s -m 3 -o /dev/null -w "%{http_code}\n" http://web   # 200
+kubectl exec -n dev stranger -- curl -s -m 3 -o /dev/null -w "%{http_code}\n" http://web   # 000
+
+kubectl get networkpolicy -n dev
+kubectl delete namespace dev
+</code></pre></div>
+
+      <p>What to look for:</p>
+      <ul>
+        <li>Part A: Pod IPs in one range, node IPs in another. Pods on different nodes ping each other with no NAT. The <code>ip route</code> output shows a default route out through <code>eth0</code>.</li>
+        <li>Part B, step 2: the result is the point. <code>000</code> means the policy was enforced. <code>200</code> means the policy was stored but ignored, so your plugin does not enforce it.</li>
+        <li>If it is not enforced and you want to practise, recreate kind with the default plugin turned off and install one that enforces policy (Calico or Cilium both do; follow the project's own kind instructions). In the kind config, add <code>networking:</code> with <code>disableDefaultCNI: true</code>, then install the plugin before anything else.</li>
+        <li>Part B, step 3, on an enforcing cluster: <code>client</code> gets <code>200</code>, <code>stranger</code> gets <code>000</code>.</li>
+      </ul>
+
+      <h2>Interview questions</h2>
+      <div class="callout interview">
+        <span class="label">Interview</span>
+        <p>Click a question, answer out loud first, then check.</p>
+
+        <details class="qa">
+          <summary>What is the Kubernetes network model?</summary>
+          <div class="answer">
+            <p>Three rules. Every Pod gets its own IP address. Any Pod can reach any other Pod, on any node, without NAT, so the destination sees the real source IP. And agents on a node, like the kubelet, can reach every Pod on that node. Kubernetes doesn't implement this itself. The container runtime calls a CNI plugin to wire up each Pod, and the plugin makes the model true.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What is CNI, and what does a plugin do when a Pod starts?</summary>
+          <div class="answer">
+            <p>The Container Network Interface is a standard that lets the runtime ask a plugin to set up networking. When a Pod starts, the runtime creates its network namespace and calls the plugin, which assigns an IP from that node's range, creates a virtual cable from the Pod to the node, and sets up routes. It also arranges how traffic gets to other nodes, through an overlay tunnel like VXLAN, through routing, or with eBPF. When the Pod is deleted it cleans up. Cilium, Calico and Flannel are common plugins.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How does a Pod on one node reach a Pod on another?</summary>
+          <div class="answer">
+            <p>Each node owns a slice of the Pod address space. The packet leaves the Pod through its virtual cable to the node, and the node's routes show that the destination is in another node's slice. With an overlay, the plugin wraps the packet inside another packet addressed to that node and unwraps it on arrival. With routed setups, plain routes or BGP deliver it. Either way there's no NAT, so the receiver sees the original Pod IP.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What's the default network behaviour, and how does NetworkPolicy change it?</summary>
+          <div class="answer">
+            <p>By default every Pod can talk to every other Pod, across namespaces, in both directions. A NetworkPolicy selects Pods by label. Once a Pod is selected for ingress or egress, it's isolated in that direction, and only what policies explicitly allow gets through. Policies are additive and have no deny rules. The catch is that a policy is only enforced if the CNI supports it. Otherwise it's stored and does nothing, so I always test.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>What's the difference between two selectors in one <code>from</code> item and two separate items?</summary>
+          <div class="answer">
+            <p>Separate items are OR: traffic matching any of them is allowed. Two selectors in the same item are AND: a namespaceSelector and a podSelector together mean Pods with that label in namespaces with that label. It's a single dash of difference and a common bug, because the AND form is narrower than people expect, and the OR form is wider.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>You add a default-deny egress policy and everything breaks. What did you forget?</summary>
+          <div class="answer">
+            <p>DNS. With egress denied, Pods can't reach the cluster DNS server, so name lookups fail and it looks like a general outage. I need an egress rule allowing UDP and TCP port 53 to the DNS Pods, usually in kube-system. I'd also check I haven't blocked other things they need, like the API server or metrics endpoints. And I'd have tested it in a non-production namespace first.</p>
+          </div>
+        </details>
+      </div>
+
+      <h2>Habits worth keeping</h2>
+      <div class="callout key">
+        <span class="label">Habits</span>
+        <p><strong>Know</strong> which CNI your cluster runs and whether it enforces policy. <strong>Test</strong> a deny, never assume it. <strong>Start</strong> closed with default-deny, then allow what is needed. <strong>Allow DNS</strong> when you restrict egress. <strong>Check</strong> your dashes: AND versus OR. <strong>Use</strong> labels, not Pod IPs. And roll out policy one namespace at a time.</p>
+      </div>
+
+      <nav class="chapter-nav" id="chapter-nav" aria-label="Chapter navigation"></nav>
+    </article>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
